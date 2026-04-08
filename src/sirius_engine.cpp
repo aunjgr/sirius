@@ -232,7 +232,8 @@ duckdb::unique_ptr<op::sirius_physical_operator> sirius_engine::construct_sirius
     auto& scan_physical_op = op->Cast<op::sirius_physical_table_scan>();
     if (scan_physical_op.function.name == "iceberg_scan") {
       return construct_iceberg_scan_operator(scan_physical_op);
-    } else if (scan_physical_op.function.name == "seq_scan") {
+    } else if (scan_physical_op.function.name == "seq_scan" ||
+               scan_physical_op.function.name == "tae_scan") {
       return duckdb::make_uniq<op::sirius_physical_duckdb_scan>(&scan_physical_op);
     } else {
       throw std::runtime_error("Unsupported scan function: " + scan_physical_op.function.name);
