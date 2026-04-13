@@ -27,6 +27,8 @@ identify = ">=2.6"
 clang-tools = "21.*"
 pkg-config = "*"
 mold = "*"
+lz4-c = ">=1.10.0,<2"
+openssl = ">=3.6.2,<4"
 
 [feature.dev-libs.dependencies]
 librmm = "*"
