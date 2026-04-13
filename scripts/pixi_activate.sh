@@ -13,12 +13,16 @@ if [[ -x "$clang_cpp" && ! -e "$clang_pp" ]]; then
 fi
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cmake_presets_src="$project_root/cmake/CMakePresets.json"
-cmake_presets_dst="$project_root/duckdb/CMakePresets.json"
 
-rm -f "$project_root/duckdb/CMakeUserPresets.json"
-if [[ ! -e "$cmake_presets_dst" ]]; then
-  ln -s "$cmake_presets_src" "$cmake_presets_dst"
+# Standalone build: symlink CMakePresets into duckdb/ submodule.
+# Skip when duckdb/ doesn't exist (building via mo-sirius-sidecar).
+if [[ -d "$project_root/duckdb" ]]; then
+  cmake_presets_src="$project_root/cmake/CMakePresets.json"
+  cmake_presets_dst="$project_root/duckdb/CMakePresets.json"
+  rm -f "$project_root/duckdb/CMakeUserPresets.json"
+  if [[ ! -e "$cmake_presets_dst" ]]; then
+    ln -s "$cmake_presets_src" "$cmake_presets_dst"
+  fi
 fi
 
 mkdir -p build
