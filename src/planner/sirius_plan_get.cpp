@@ -100,6 +100,28 @@ sirius_physical_plan_generator::create_plan(duckdb::LogicalGet& op)
     }
   }
 
+  // Compute the batch column map for the (possibly expanded) projection set.
+  // The DuckDB table function scans columns in sorted projection_ids order,
+  // so we need a column_ids-index → batch-position mapping for any expression
+  // that must reference columns by their position in the scanned batch.
+  std::vector<std::size_t> sorted_proj_ids(projection_ids.begin(), projection_ids.end());
+  std::sort(sorted_proj_ids.begin(), sorted_proj_ids.end());
+
+  constexpr auto NOT_PROJECTED = static_cast<std::size_t>(-1);
+  std::vector<std::size_t> local_batch_column_map(column_ids.size(), NOT_PROJECTED);
+  for (std::size_t batch_pos = 0; batch_pos < sorted_proj_ids.size(); batch_pos++) {
+    local_batch_column_map[sorted_proj_ids[batch_pos]] = batch_pos;
+  }
+
+  // Types for ALL projected columns in batch (sorted) order.
+  // When an unsupported-type filter sits between the scan and the rest of the
+  // plan, the scan must output all these columns so the filter can reference them.
+  duckdb::vector<duckdb::LogicalType> batch_ordered_types;
+  for (auto& sp : sorted_proj_ids) {
+    auto col_id = column_ids[sp].GetPrimaryIndex();
+    batch_ordered_types.push_back(op.returned_types[col_id]);
+  }
+
   // Handle cases where table function doesn't support pushdown for specific column types
   if (table_filters && op.function.supports_pushdown_type) {
     duckdb::vector<duckdb::unique_ptr<duckdb::Expression>> select_list;
@@ -112,7 +134,8 @@ sirius_physical_plan_generator::create_plan(duckdb::LogicalGet& op)
       // create a separate filter operator for it
       if (!op.function.supports_pushdown_type(*op.bind_data, column_id)) {
         std::size_t column_id_filter = entry.first;
-        auto column = duckdb::make_uniq<duckdb::BoundReferenceExpression>(type, column_id_filter);
+        auto batch_idx = local_batch_column_map[column_id_filter];
+        auto column = duckdb::make_uniq<duckdb::BoundReferenceExpression>(type, batch_idx);
         select_list.push_back(entry.second->ToExpression(*column));
         to_remove.insert(entry.first);
       }
@@ -122,11 +145,6 @@ sirius_physical_plan_generator::create_plan(duckdb::LogicalGet& op)
     }
 
     if (!select_list.empty()) {
-      duckdb::vector<duckdb::LogicalType> filter_types;
-      for (auto& c : projection_ids) {
-        auto column_id = column_ids[c].GetPrimaryIndex();
-        filter_types.push_back(op.returned_types[column_id]);
-      }
       // sirius_physical_filter owns a single expression; AND-merge predicates when there are many.
       duckdb::unique_ptr<duckdb::Expression> combined;
       if (select_list.size() > 1) {
@@ -140,7 +158,7 @@ sirius_physical_plan_generator::create_plan(duckdb::LogicalGet& op)
         combined = std::move(select_list[0]);
       }
       filter =
-        duckdb::make_uniq<sirius::op::sirius_physical_filter>(sirius::from_duckdb_vec(filter_types),
+        duckdb::make_uniq<sirius::op::sirius_physical_filter>(sirius::from_duckdb_vec(batch_ordered_types),
                                                               sirius::wrap(std::move(combined)),
                                                               op.estimated_cardinality);
     }
@@ -209,8 +227,12 @@ sirius_physical_plan_generator::create_plan(duckdb::LogicalGet& op)
     return std::move(projection);
   }
 
+  // When an unsupported-type filter sits above the scan, the scan must output
+  // ALL projected columns (in batch-sorted order) so the filter can reference
+  // them.  A projection is then added after the filter to map back to the
+  // original output columns.  Without a filter the scan projects internally.
   auto node = duckdb::make_uniq<sirius::op::sirius_physical_table_scan>(
-    sirius::from_duckdb_vec(original_types),  // Use original types, not modified
+    sirius::from_duckdb_vec(filter ? batch_ordered_types : original_types),
     op.function,
     std::move(op.bind_data),
     sirius::from_duckdb_vec(op.returned_types),
@@ -226,7 +248,20 @@ sirius_physical_plan_generator::create_plan(duckdb::LogicalGet& op)
   node->dynamic_filters  = op.dynamic_filters;
   if (filter) {
     filter->children.push_back(std::move(node));
-    return std::move(filter);
+
+    // Project from the filter's batch-ordered output back to the original
+    // output columns expected by upstream operators.
+    duckdb::vector<duckdb::unique_ptr<duckdb::Expression>> proj_expressions;
+    for (auto& orig_id : original_projection_ids) {
+      auto col_id = column_ids[orig_id].GetPrimaryIndex();
+      auto type   = op.returned_types[col_id];
+      proj_expressions.push_back(
+        duckdb::make_uniq<duckdb::BoundReferenceExpression>(type, local_batch_column_map[orig_id]));
+    }
+    auto projection = duckdb::make_uniq<sirius::op::sirius_physical_projection>(
+      original_types, std::move(proj_expressions), op.estimated_cardinality);
+    projection->children.push_back(std::move(filter));
+    return std::move(projection);
   }
   return std::move(node);
 }
