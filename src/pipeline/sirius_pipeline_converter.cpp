@@ -249,7 +249,8 @@ void sirius_pipeline_converter::split_table_scan_source(
     return;
   }
 
-  if (scan_op.function.name == "seq_scan" || scan_op.function.name == "iceberg_scan") {
+  if (scan_op.function.name == "seq_scan" || scan_op.function.name == "iceberg_scan" ||
+      scan_op.function.name == "tae_scan") {
     auto new_pipeline = duckdb::make_shared_ptr<sirius_pipeline>(engine_);
 
     auto new_scan_op = engine_.construct_sirius_specific_operator(&scan_op);
@@ -1196,7 +1197,7 @@ void sirius_pipeline_converter::log_pipeline_debug_info() const
       } else if (first_op.type == op::SiriusPhysicalOperatorType::TABLE_SCAN) {
         const auto& scan_name = first_op.Cast<op::sirius_physical_table_scan>().function.name;
         if (scan_name != "seq_scan" && scan_name != "parquet_scan" && scan_name != "read_parquet" &&
-            scan_name != "iceberg_scan") {
+            scan_name != "iceberg_scan" && scan_name != "tae_scan") {
           throw std::runtime_error("Unsupported scan function: " + scan_name);
         }
         // Scans have "scan" port
