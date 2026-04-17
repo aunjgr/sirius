@@ -76,6 +76,14 @@ sirius_physical_plan_generator::create_plan(duckdb::LogicalGet& op)
   // Since we don't pass filters to the DuckDB table function (they're applied by Sirius),
   // we need to ensure all filter columns are included in BOTH column_ids and projection_ids.
   // We track the original projection_ids so we can project back after filtering.
+  //
+  // Empty projection_ids means "project all columns" in DuckDB.  Expand to explicit
+  // indices so the filter-column addition and post-filter projection logic work correctly.
+  if (projection_ids.empty()) {
+    for (std::size_t i = 0; i < column_ids.size(); i++) {
+      projection_ids.push_back(i);
+    }
+  }
   duckdb::vector<std::size_t> original_projection_ids = projection_ids;
 
   // Save the original types before we modify projection_ids, because modifying projection_ids
