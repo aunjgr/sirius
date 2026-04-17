@@ -150,7 +150,8 @@ enum class SiriusPhysicalOperatorType : uint8_t {
   ICEBERG_SCAN,
   CPU_SOURCE,
   PARQUET_METADATA_SCAN,
-  GPU_PARQUET_SCAN
+  GPU_PARQUET_SCAN,
+  GPU_TAE_SCAN
 };
 
 std::string SiriusPhysicalOperatorToString(SiriusPhysicalOperatorType type);

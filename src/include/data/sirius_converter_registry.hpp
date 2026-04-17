@@ -18,6 +18,7 @@
 
 #include <cucascade/data/representation_converter.hpp>
 #include <data/host_parquet_representation_converters.hpp>
+#include <data/host_tae_representation_converters.hpp>
 
 #include <memory>
 #include <mutex>
@@ -51,6 +52,7 @@ class converter_registry {
     instance_ = std::make_unique<registry_type>();
     cucascade::register_builtin_converters(*instance_);
     sirius::register_parquet_converters(*instance_);
+    sirius::register_tae_converters(*instance_);
   }
 
   /**

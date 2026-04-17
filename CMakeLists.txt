@@ -141,6 +141,8 @@ set(EXTENSION_SOURCES
     src/creator/task_creator.cpp
     src/data/host_parquet_representation.cpp
     src/data/host_parquet_representation_converters.cpp
+    src/data/host_tae_representation.cpp
+    src/data/host_tae_representation_converters.cpp
     src/downgrade/downgrade_executor.cpp
     src/expression/expression.cpp
     src/expression/join_condition.cpp
@@ -184,6 +186,7 @@ set(EXTENSION_SOURCES
     src/op/scan/scan_utils.cpp
     src/op/scan/sirius_parquet_metadata_scan_operator.cpp
     src/op/scan/sirius_gpu_parquet_scan_operator.cpp
+    src/op/scan/tae_scan_task.cpp
     src/op/sirius_physical_column_data_scan.cpp
     src/op/sirius_physical_cpu_source.cpp
     src/op/sirius_physical_concat.cpp
@@ -193,6 +196,7 @@ set(EXTENSION_SOURCES
     src/op/sirius_physical_dummy_scan.cpp
     src/op/sirius_physical_empty_result.cpp
     src/op/sirius_physical_filter.cpp
+    src/op/sirius_physical_gpu_tae_scan.cpp
     src/op/sirius_physical_grouped_aggregate.cpp
     src/op/sirius_physical_grouped_aggregate_merge.cpp
     src/op/sirius_physical_hash_join.cpp
@@ -245,6 +249,7 @@ set(EXTENSION_SOURCES
     src/sirius_engine.cpp
     src/sirius_extension.cpp
     src/sirius_interface.cpp
+    src/tae/tae_metadata_parser.cpp
     src/transparent/physical_sirius_execution.cpp
     src/transparent/sirius_optimizer_extension.cpp
     src/util/stream_check_wrapper.cpp
@@ -253,7 +258,11 @@ set(EXTENSION_SOURCES
 
 # Legacy Sirius — all legacy-specific config lives in src/legacy/CMakeLists.txt.
 # Deleting src/legacy/ cleanly removes legacy build support.
-set(CUDA_SOURCES src/op/scan/equality_delete_mask.cu)
+set(CUDA_SOURCES
+    src/op/scan/equality_delete_mask.cu
+    src/cuda/tae/tae_decode_fixed.cu
+    src/cuda/tae/tae_decode_varchar.cu
+    src/cuda/tae/tae_null_mask.cu)
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/legacy/CMakeLists.txt")
   add_subdirectory(src/legacy)
   list(APPEND EXTENSION_SOURCES ${SIRIUS_LEGACY_SOURCES}
@@ -293,6 +302,8 @@ foreach(_target sirius_extension sirius_loadable_extension)
     PRIVATE
       $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/include>
       $<$<BOOL:${SIRIUS_LEGACY_INCLUDE_DIR}>:$<BUILD_INTERFACE:${SIRIUS_LEGACY_INCLUDE_DIR}>>
+      # tae-scanner headers needed by tae_scan_task.cpp for TAEScanBindData
+      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../tae-scanner/include>
   )
 
   if(SIRIUS_LEGACY_COMPILE_DEFINITIONS)
@@ -301,7 +312,7 @@ foreach(_target sirius_extension sirius_loadable_extension)
   endif()
 
   target_link_libraries(${_target} cudf::cudf rmm::rmm spdlog::spdlog
-                        cuCascade::cucascade yaml-cpp::yaml-cpp)
+                        cuCascade::cucascade yaml-cpp::yaml-cpp lz4 nvcomp)
 
   add_dependencies(${_target} duckdb_static)
 endforeach()

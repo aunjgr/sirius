@@ -23,6 +23,7 @@
 #include "log/logging.hpp"
 #include "op/sirius_physical_cpu_source.hpp"
 #include "op/sirius_physical_parquet_scan.hpp"
+#include "op/sirius_physical_gpu_tae_scan.hpp"
 #include "pipeline/sirius_meta_pipeline.hpp"
 #include "sirius/exception.hpp"
 #include "sirius_engine.hpp"
@@ -322,6 +323,16 @@ void sirius_pipeline::update_pipeline_status()
     if (cpu_source.exhausted.load()) {
       if (tasks_created.load() == tasks_completed.load()) { pipeline_finished = true; }
       end_nvtx_range_if_finished();
+      return;
+    }
+  } else if (get_source()->type == op::SiriusPhysicalOperatorType::GPU_TAE_SCAN) {
+    auto& tae_scan = get_source()->Cast<op::sirius_physical_gpu_tae_scan>();
+    if (!tae_scan.has_more_partitions) {
+      if (tasks_created.load() == tasks_completed.load()) {
+        pipeline_finished = true;
+        end_nvtx_range_if_finished();
+        notify_downstream_pipelines();
+      }
       return;
     }
   } else {

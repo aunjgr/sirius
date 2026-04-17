@@ -999,7 +999,8 @@ void sirius_pipeline_converter::wire_data_repositories()
       }
     } else if (scheduled_[i]->sink->type == op::SiriusPhysicalOperatorType::DUCKDB_SCAN ||
                scheduled_[i]->sink->type == op::SiriusPhysicalOperatorType::ICEBERG_SCAN ||
-               scheduled_[i]->sink->type == op::SiriusPhysicalOperatorType::CPU_SOURCE) {
+               scheduled_[i]->sink->type == op::SiriusPhysicalOperatorType::CPU_SOURCE ||
+               scheduled_[i]->sink->type == op::SiriusPhysicalOperatorType::GPU_TAE_SCAN) {
       for (auto const& dependent_pipeline : source_to_pipelines[scheduled_[i]->get_sink().get()]) {
         auto next_op             = dependent_pipeline->get_operators().size() == 0
                                      ? dependent_pipeline->get_sink().get()
@@ -1217,6 +1218,7 @@ void sirius_pipeline_converter::log_pipeline_debug_info() const
                  first_op.type == op::SiriusPhysicalOperatorType::DUCKDB_SCAN ||
                  first_op.type == op::SiriusPhysicalOperatorType::ICEBERG_SCAN ||
                  first_op.type == op::SiriusPhysicalOperatorType::CPU_SOURCE ||
+                 first_op.type == op::SiriusPhysicalOperatorType::GPU_TAE_SCAN ||
                  first_op.type == op::SiriusPhysicalOperatorType::RESULT_COLLECTOR ||
                  first_op.type == op::SiriusPhysicalOperatorType::COLUMN_DATA_SCAN ||
                  first_op.type == op::SiriusPhysicalOperatorType::EMPTY_RESULT ||
@@ -1268,6 +1270,7 @@ void sirius_pipeline_converter::log_pipeline_debug_info() const
                  sink->type == op::SiriusPhysicalOperatorType::DUCKDB_SCAN ||
                  sink->type == op::SiriusPhysicalOperatorType::ICEBERG_SCAN ||
                  sink->type == op::SiriusPhysicalOperatorType::CPU_SOURCE ||
+                 sink->type == op::SiriusPhysicalOperatorType::GPU_TAE_SCAN ||
                  sink->type == op::SiriusPhysicalOperatorType::COLUMN_DATA_SCAN ||
                  sink->type == op::SiriusPhysicalOperatorType::EMPTY_RESULT ||
                  sink->type == op::SiriusPhysicalOperatorType::DUMMY_SCAN) {
