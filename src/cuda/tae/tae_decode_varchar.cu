@@ -198,4 +198,16 @@ std::size_t compute_varchar_total_chars(const uint8_t* d_varlena_base,
   return static_cast<std::size_t>(h_total);
 }
 
+void compute_varchar_total_chars_async(const uint8_t* d_varlena_base,
+                                       const uint8_t* d_area_base,
+                                       uint32_t n_rows,
+                                       unsigned long long* d_total,
+                                       rmm::cuda_stream_view stream)
+{
+  if (n_rows == 0) return;
+  uint32_t blocks = (n_rows + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
+  sum_lengths_kernel<<<blocks, THREADS_PER_BLOCK, 0, stream.value()>>>(
+    d_varlena_base, d_area_base, n_rows, d_total);
+}
+
 }  // namespace sirius::cuda::tae

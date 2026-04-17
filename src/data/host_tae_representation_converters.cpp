@@ -195,32 +195,19 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
     }
   }
 
-  // 4. Transfer ALL compressed data to GPU in one shot
+  // 4. Transfer entire host buffer to GPU in a single contiguous copy.
+  //    This replaces per-chunk H→D copies, reducing driver overhead and
+  //    enabling full PCIe bandwidth utilization.
+  rmm::device_buffer d_mirror(linear_host.size(), stream, mr_ref);
+  CUDF_CUDA_TRY(cudaMemcpyAsync(d_mirror.data(), linear_host.data(),
+                                 linear_host.size(), cudaMemcpyHostToDevice, stream.value()));
+
+  // 5. Allocate decompression output buffers
   std::size_t total_compressed = 0;
   for (auto idx : compressed_indices) {
     total_compressed += chunks[idx].pinned_length;
   }
 
-  rmm::device_buffer d_compressed(total_compressed, stream, mr_ref);
-
-  // Copy compressed chunks contiguously to GPU
-  std::vector<std::size_t> d_compressed_offsets(compressed_indices.size());
-  {
-    std::size_t off = 0;
-    for (std::size_t ci = 0; ci < compressed_indices.size(); ci++) {
-      auto& chunk = chunks[compressed_indices[ci]];
-      d_compressed_offsets[ci] = off;
-      CUDF_CUDA_TRY(cudaMemcpyAsync(
-        static_cast<uint8_t*>(d_compressed.data()) + off,
-        linear_host.data() + chunk.pinned_offset,
-        chunk.pinned_length,
-        cudaMemcpyHostToDevice,
-        stream.value()));
-      off += chunk.pinned_length;
-    }
-  }
-
-  // 5. Allocate decompression output buffers
   std::size_t total_decompressed = 0;
   for (auto idx : compressed_indices) {
     total_decompressed += chunks[idx].extent.origin_size;
@@ -237,7 +224,7 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
     }
   }
 
-  // 6. nvCOMP batch LZ4 decompress
+  // 6. nvCOMP batch LZ4 decompress (source pointers reference d_mirror directly)
   if (!compressed_indices.empty()) {
     std::size_t num_chunks_to_decompress = compressed_indices.size();
 
@@ -251,7 +238,7 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
 
     for (std::size_t ci = 0; ci < num_chunks_to_decompress; ci++) {
       auto& chunk = chunks[compressed_indices[ci]];
-      h_comp_ptrs[ci]  = static_cast<uint8_t*>(d_compressed.data()) + d_compressed_offsets[ci];
+      h_comp_ptrs[ci]  = static_cast<uint8_t*>(d_mirror.data()) + chunk.pinned_offset;
       h_comp_sizes[ci] = chunk.pinned_length;
       h_decomp_ptrs[ci]      = static_cast<uint8_t*>(d_decompressed.data()) + d_decompressed_offsets[ci];
       h_decomp_buf_sizes[ci] = chunk.extent.origin_size;
@@ -314,45 +301,15 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
                     num_chunks_to_decompress, total_compressed, total_decompressed);
   }
 
-  // Also transfer uncompressed chunks to device
-  std::size_t total_uncompressed_raw = 0;
+  // 7. Pre-built chunk→device_ptr map (O(1) lookup, replaces O(n) linear scan)
+  std::vector<uint8_t*> chunk_device_ptrs(chunks.size());
+  for (std::size_t ci = 0; ci < compressed_indices.size(); ci++) {
+    chunk_device_ptrs[compressed_indices[ci]] =
+      static_cast<uint8_t*>(d_decompressed.data()) + d_decompressed_offsets[ci];
+  }
   for (auto idx : uncompressed_indices) {
-    total_uncompressed_raw += chunks[idx].pinned_length;
+    chunk_device_ptrs[idx] = static_cast<uint8_t*>(d_mirror.data()) + chunks[idx].pinned_offset;
   }
-
-  rmm::device_buffer d_uncompressed_raw(total_uncompressed_raw, stream, mr_ref);
-  std::vector<std::size_t> d_uncompressed_offsets(uncompressed_indices.size());
-  {
-    std::size_t off = 0;
-    for (std::size_t ui = 0; ui < uncompressed_indices.size(); ui++) {
-      auto& chunk = chunks[uncompressed_indices[ui]];
-      d_uncompressed_offsets[ui] = off;
-      CUDF_CUDA_TRY(cudaMemcpyAsync(
-        static_cast<uint8_t*>(d_uncompressed_raw.data()) + off,
-        linear_host.data() + chunk.pinned_offset,
-        chunk.pinned_length,
-        cudaMemcpyHostToDevice,
-        stream.value()));
-      off += chunk.pinned_length;
-    }
-  }
-
-  // 7. Build a mapping: chunk_index → device pointer to decompressed data
-  auto get_chunk_device_ptr = [&](std::size_t chunk_idx) -> uint8_t* {
-    // Check compressed list
-    for (std::size_t ci = 0; ci < compressed_indices.size(); ci++) {
-      if (compressed_indices[ci] == chunk_idx) {
-        return static_cast<uint8_t*>(d_decompressed.data()) + d_decompressed_offsets[ci];
-      }
-    }
-    // Check uncompressed list
-    for (std::size_t ui = 0; ui < uncompressed_indices.size(); ui++) {
-      if (uncompressed_indices[ui] == chunk_idx) {
-        return static_cast<uint8_t*>(d_uncompressed_raw.data()) + d_uncompressed_offsets[ui];
-      }
-    }
-    throw std::runtime_error("chunk not found in either compressed or uncompressed lists");
-  };
 
   auto get_chunk_decompressed_size = [&](std::size_t chunk_idx) -> std::size_t {
     auto& chunk = chunks[chunk_idx];
@@ -377,30 +334,38 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
     if (is_varchar_type(type_oid)) {
       // VARCHAR: build cuDF offsets + chars from MO varlena format
       // MO vector layout: [header 29B][varlena_structs row_count*24B][areaLen 4B][area...][nsp...]
+      //
+      // Performance: batched GPU reads reduce stream.synchronize() calls from
+      // 4N (one per block per phase) down to 2 total syncs.
 
-      // First pass: compute total chars by calling compute kernel per block
-      std::size_t grand_total_chars = 0;
       struct block_info {
         uint8_t* d_data;        // pointer to varlena struct array
         uint8_t* d_area;        // pointer to area section
         std::size_t d_size;
         uint32_t rows;
         uint32_t actual_data_len;  // actual dataLen from vector header
+        uint32_t area_len;         // areaLen for nsp offset computation
         std::size_t chunk_index;   // for null mask pass
       };
+
+      // === Sync 1: Batch read actual_data_lens for all varchar blocks ===
+      std::vector<uint32_t> batch_data_lens(chunk_refs.size());
+      for (std::size_t i = 0; i < chunk_refs.size(); i++) {
+        auto* d_ptr = chunk_device_ptrs[chunk_refs[i].chunk_index];
+        CUDF_CUDA_TRY(cudaMemcpyAsync(&batch_data_lens[i], d_ptr + 25, sizeof(uint32_t),
+                                       cudaMemcpyDeviceToHost, stream.value()));
+      }
+      stream.synchronize();
+
+      // Build block_info using known data_lens
       std::vector<block_info> blocks;
       blocks.reserve(chunk_refs.size());
-
-      for (auto& cr : chunk_refs) {
+      for (std::size_t i = 0; i < chunk_refs.size(); i++) {
+        auto& cr = chunk_refs[i];
         auto& chunk = chunks[cr.chunk_index];
-        auto* d_ptr = get_chunk_device_ptr(cr.chunk_index);
+        auto* d_ptr = chunk_device_ptrs[cr.chunk_index];
         auto d_size = get_chunk_decompressed_size(cr.chunk_index);
-
-        // Read actual dataLen from decompressed vector header (bytes 25-28)
-        uint32_t actual_data_len = 0;
-        CUDF_CUDA_TRY(cudaMemcpyAsync(&actual_data_len, d_ptr + 25, 4,
-                                       cudaMemcpyDeviceToHost, stream.value()));
-        stream.synchronize();
+        uint32_t actual_data_len = batch_data_lens[i];
 
         uint32_t expected_data_len = chunk.row_count * VARLENA_STRUCT_SIZE;
         if (actual_data_len != expected_data_len) {
@@ -408,19 +373,50 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
                        cr.chunk_index, actual_data_len, expected_data_len, chunk.row_count);
         }
 
-        // Compute section pointers using ACTUAL dataLen
-        auto* d_varlena = d_ptr + VEC_HEADER_SIZE;
-        auto* d_area = d_ptr + VEC_HEADER_SIZE + actual_data_len + 4;  // past data + areaLen field
-
-        // Bounds check
         if (VEC_HEADER_SIZE + actual_data_len > d_size) {
           throw std::runtime_error("varchar varlena section exceeds decompressed buffer");
         }
 
-        blocks.push_back({d_varlena, d_area, d_size, chunk.row_count, actual_data_len, cr.chunk_index});
+        auto* d_varlena = d_ptr + VEC_HEADER_SIZE;
+        auto* d_area = d_ptr + VEC_HEADER_SIZE + actual_data_len + 4;
+        blocks.push_back({d_varlena, d_area, d_size, chunk.row_count, actual_data_len, 0, cr.chunk_index});
+      }
 
-        auto block_chars = cuda::tae::compute_varchar_total_chars(d_varlena, d_area, chunk.row_count, stream);
-        grand_total_chars += block_chars;
+      // === Sync 2: Batch compute total chars + batch read area_lens ===
+      // Launch async sum-lengths kernels for all blocks (no sync between them)
+      rmm::device_uvector<unsigned long long> d_block_totals(blocks.size(), stream, mr_ref);
+      CUDF_CUDA_TRY(cudaMemsetAsync(d_block_totals.data(), 0,
+                                     blocks.size() * sizeof(unsigned long long), stream.value()));
+      for (std::size_t i = 0; i < blocks.size(); i++) {
+        cuda::tae::compute_varchar_total_chars_async(
+          blocks[i].d_data, blocks[i].d_area, blocks[i].rows,
+          d_block_totals.data() + i, stream);
+      }
+
+      // Also batch-read area_lens for blocks that have nulls (same sync)
+      for (std::size_t i = 0; i < blocks.size(); i++) {
+        auto& chunk = chunks[blocks[i].chunk_index];
+        if (chunk.null_cnt > 0) {
+          auto* d_ptr = chunk_device_ptrs[blocks[i].chunk_index];
+          CUDF_CUDA_TRY(cudaMemcpyAsync(&blocks[i].area_len,
+                                         d_ptr + VEC_HEADER_SIZE + blocks[i].actual_data_len,
+                                         sizeof(uint32_t), cudaMemcpyDeviceToHost, stream.value()));
+        }
+      }
+
+      // D2H copy of block totals
+      std::vector<unsigned long long> h_block_totals(blocks.size());
+      CUDF_CUDA_TRY(cudaMemcpyAsync(h_block_totals.data(), d_block_totals.data(),
+                                     blocks.size() * sizeof(unsigned long long),
+                                     cudaMemcpyDeviceToHost, stream.value()));
+      stream.synchronize();
+
+      // Compute per-block char offsets and grand total on host
+      std::size_t grand_total_chars = 0;
+      std::vector<std::size_t> block_char_offsets(blocks.size());
+      for (std::size_t i = 0; i < blocks.size(); i++) {
+        block_char_offsets[i] = grand_total_chars;
+        grand_total_chars += h_block_totals[i];
       }
 
       // Allocate output: offsets (int32) and chars (uint8)
@@ -428,14 +424,14 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
         (col_total_rows + 1) * sizeof(int32_t), stream, mr_ref);
       auto chars_buf = rmm::device_buffer(grand_total_chars, stream, mr_ref);
 
-      // Decode each block with offset into the output arrays.
-      // Each block's prefix-sum starts from 0, so we must adjust offsets to be
-      // globally monotonic for cuDF (which expects strictly increasing offsets).
+      // === Phase 3: Decode all blocks — no further syncs needed ===
+      // Per-block char offsets were pre-computed above, eliminating the
+      // sequential last_offset reads that previously required N syncs.
       std::size_t row_offset = 0;
-      std::size_t char_offset = 0;
-      for (auto& bi : blocks) {
+      for (std::size_t i = 0; i < blocks.size(); i++) {
+        auto& bi = blocks[i];
         auto* d_offsets_out = static_cast<int32_t*>(offsets_buf.data()) + row_offset;
-        auto* d_chars_out = static_cast<uint8_t*>(chars_buf.data()) + char_offset;
+        auto* d_chars_out = static_cast<uint8_t*>(chars_buf.data()) + block_char_offsets[i];
 
         // Query CUB temp storage size first
         std::size_t temp_bytes = 0;
@@ -448,19 +444,11 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
           bi.d_data, bi.d_area, d_offsets_out, d_chars_out, d_temp.data(), temp_bytes, bi.rows, stream);
 
         // Adjust offsets to be globally monotonic by adding cumulative char_offset
-        if (char_offset > 0) {
-          cuda::tae::adjust_offsets(d_offsets_out, static_cast<int32_t>(char_offset), bi.rows + 1, stream);
+        if (block_char_offsets[i] > 0) {
+          cuda::tae::adjust_offsets(d_offsets_out, static_cast<int32_t>(block_char_offsets[i]),
+                                    bi.rows + 1, stream);
         }
 
-        // Read the last offset (now global) to get cumulative char count
-        int32_t last_offset = 0;
-        CUDF_CUDA_TRY(cudaMemcpyAsync(&last_offset,
-                                  d_offsets_out + bi.rows,
-                                  sizeof(int32_t),
-                                  cudaMemcpyDeviceToHost,
-                                  stream.value()));
-        stream.synchronize();
-        char_offset = static_cast<std::size_t>(last_offset);
         row_offset += bi.rows;
       }
 
@@ -472,7 +460,7 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
         rmm::device_buffer{},
         0);
 
-      // Build null mask if any block has nulls
+      // Build null mask using pre-read area_lens (no sync needed)
       uint32_t total_nulls = 0;
       for (auto& cr : chunk_refs) {
         total_nulls += chunks[cr.chunk_index].null_cnt;
@@ -481,23 +469,12 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
       rmm::device_buffer null_mask;
       if (total_nulls > 0) {
         null_mask = cudf::create_null_mask(col_total_rows, cudf::mask_state::ALL_VALID, stream, mr_ref);
-        // MO null bitmap (nsp section) is after data and area sections.
-        // For varchar: nsp starts at VEC_HEADER_SIZE + dataLen + 4 + areaLen + 4
         std::size_t bitmask_row_offset = 0;
         for (auto& bi : blocks) {
           auto& chunk = chunks[bi.chunk_index];
           if (chunk.null_cnt > 0) {
-            auto* d_src_blk = get_chunk_device_ptr(bi.chunk_index);
-            // Read areaLen from GPU (4 bytes at VEC_HEADER_SIZE + actual_data_len)
-            uint32_t area_len = 0;
-            CUDF_CUDA_TRY(cudaMemcpyAsync(&area_len,
-                                      d_src_blk + VEC_HEADER_SIZE + bi.actual_data_len,
-                                      sizeof(uint32_t),
-                                      cudaMemcpyDeviceToHost,
-                                      stream.value()));
-            stream.synchronize();
-            // nsp section: past area + nspLen field + nsp header (count 8B + len 8B + dataSize 8B)
-            uint32_t nsp_bitmap_offset = VEC_HEADER_SIZE + bi.actual_data_len + 4 + area_len + 4 + 24;
+            auto* d_src_blk = chunk_device_ptrs[bi.chunk_index];
+            uint32_t nsp_bitmap_offset = VEC_HEADER_SIZE + bi.actual_data_len + 4 + bi.area_len + 4 + 24;
             auto* d_validity = static_cast<uint32_t*>(null_mask.data());
             cuda::tae::invert_null_mask(d_src_blk + nsp_bitmap_offset,
                                         d_validity + (bitmask_row_offset / 32),
@@ -532,12 +509,18 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
       std::size_t row_offset = 0;
       for (auto& cr : chunk_refs) {
         auto& chunk = chunks[cr.chunk_index];
-        auto* d_src = get_chunk_device_ptr(cr.chunk_index);
+        auto* d_src = chunk_device_ptrs[cr.chunk_index];
         auto* d_data = d_src + VEC_HEADER_SIZE;  // skip IOEntry + vec header
         auto* d_dst = static_cast<uint8_t*>(data_buf.data()) + row_offset * elem_size;
 
-        cuda::tae::decode_fixed_width(
-          d_data, d_dst, chunk.row_count, elem_size, epoch_adjust, stream);
+        if (epoch_adjust == 0) {
+          // Direct D2D copy — avoids kernel launch overhead for simple memcpy
+          CUDF_CUDA_TRY(cudaMemcpyAsync(d_dst, d_data, chunk.row_count * elem_size,
+                                        cudaMemcpyDeviceToDevice, stream.value()));
+        } else {
+          cuda::tae::decode_fixed_width(
+            d_data, d_dst, chunk.row_count, elem_size, epoch_adjust, stream);
+        }
 
         row_offset += chunk.row_count;
       }
@@ -563,7 +546,7 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
             continue;
           }
 
-          auto* d_src = get_chunk_device_ptr(cr.chunk_index);
+          auto* d_src = chunk_device_ptrs[cr.chunk_index];
           uint32_t data_len = chunk.row_count * elem_size;
           uint32_t nsp_bitmap_offset = VEC_HEADER_SIZE + data_len + 4 + 0 + 4 + 24;
           auto* d_validity = static_cast<uint32_t*>(null_mask.data());

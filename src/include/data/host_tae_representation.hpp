@@ -27,12 +27,89 @@
 // rmm
 #include <rmm/cuda_stream_view.hpp>
 
+// CUDA
+#include <cuda_runtime.h>
+
 // standard library
 #include <cstddef>
 #include <memory>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace sirius {
+
+/**
+ * @brief RAII wrapper for host memory that uses CUDA pinned (page-locked)
+ * allocation above a size threshold, falling back to regular heap allocation
+ * for small buffers where cudaMallocHost overhead would dominate.
+ *
+ * Pinned memory enables truly asynchronous cudaMemcpyAsync transfers,
+ * avoiding the internal staging copy that pageable memory requires.
+ * Provides the same data()/size() interface as std::vector<uint8_t>.
+ */
+struct pinned_host_buffer {
+  static constexpr std::size_t PINNED_THRESHOLD = std::size_t(64) << 20;  // 64 MB
+
+  pinned_host_buffer() = default;
+
+  explicit pinned_host_buffer(std::size_t n) : _size(n), _pinned(n >= PINNED_THRESHOLD)
+  {
+    if (n > 0) {
+      if (_pinned) {
+        auto err = cudaMallocHost(&_ptr, n);
+        if (err != cudaSuccess) {
+          throw std::runtime_error(std::string("cudaMallocHost failed: ") + cudaGetErrorString(err));
+        }
+      } else {
+        _ptr = new uint8_t[n];
+      }
+    }
+  }
+
+  ~pinned_host_buffer()
+  {
+    if (_ptr) {
+      if (_pinned) cudaFreeHost(_ptr);
+      else delete[] static_cast<uint8_t*>(_ptr);
+    }
+  }
+
+  pinned_host_buffer(pinned_host_buffer&& o) noexcept : _ptr(o._ptr), _size(o._size), _pinned(o._pinned)
+  {
+    o._ptr  = nullptr;
+    o._size = 0;
+  }
+
+  pinned_host_buffer& operator=(pinned_host_buffer&& o) noexcept
+  {
+    if (this != &o) {
+      if (_ptr) {
+        if (_pinned) cudaFreeHost(_ptr);
+        else delete[] static_cast<uint8_t*>(_ptr);
+      }
+      _ptr    = o._ptr;
+      _size   = o._size;
+      _pinned = o._pinned;
+      o._ptr  = nullptr;
+      o._size = 0;
+    }
+    return *this;
+  }
+
+  pinned_host_buffer(pinned_host_buffer const&)            = delete;
+  pinned_host_buffer& operator=(pinned_host_buffer const&) = delete;
+
+  [[nodiscard]] uint8_t* data() { return static_cast<uint8_t*>(_ptr); }
+  [[nodiscard]] uint8_t const* data() const { return static_cast<uint8_t const*>(_ptr); }
+  [[nodiscard]] std::size_t size() const { return _size; }
+  [[nodiscard]] bool is_pinned() const { return _pinned; }
+
+ private:
+  void* _ptr       = nullptr;
+  std::size_t _size = 0;
+  bool _pinned      = false;
+};
 
 /**
  * @brief Host representation of compressed TAE column data.
@@ -70,7 +147,7 @@ class host_tae_representation : public cucascade::idata_representation {
    * @brief Constructs a host_tae_representation.
    *
    * @param memory_space  The memory space for the target GPU.
-   * @param host_data     Contiguous host buffer holding compressed column data.
+   * @param host_data     Pinned host buffer holding compressed column data.
    * @param chunks        Per-column metadata for the converter to decode.
    * @param total_rows    Total row count across all blocks in this object.
    * @param compressed_bytes  Total compressed bytes in host_data.
@@ -80,7 +157,7 @@ class host_tae_representation : public cucascade::idata_representation {
    */
   host_tae_representation(
     cucascade::memory::memory_space* memory_space,
-    std::vector<uint8_t> host_data,
+    pinned_host_buffer host_data,
     std::vector<column_chunk_info> chunks,
     std::size_t total_rows,
     std::size_t compressed_bytes,
@@ -109,7 +186,7 @@ class host_tae_representation : public cucascade::idata_representation {
   }
 
  private:
-  std::shared_ptr<std::vector<uint8_t>> _host_data;
+  std::shared_ptr<pinned_host_buffer> _host_data;
 
   std::vector<column_chunk_info> _chunks;
   std::size_t _total_rows;

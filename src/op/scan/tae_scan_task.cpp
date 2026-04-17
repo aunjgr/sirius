@@ -336,8 +336,9 @@ std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_
     total_uncompressed += r.origin_size;
   }
 
-  // 8. Read compressed column data into contiguous host buffer (CRC stripping during read)
-  std::vector<uint8_t> host_data(total_compressed);
+  // 8. Read compressed column data into pinned host buffer (CRC stripping during read)
+  //    Pinned memory enables truly asynchronous H→D transfers via cudaMemcpyAsync.
+  pinned_host_buffer host_data(total_compressed);
   std::vector<host_tae_representation::column_chunk_info> chunks;
   std::size_t write_offset = 0;
 

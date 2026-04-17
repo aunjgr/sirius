@@ -22,7 +22,7 @@ namespace sirius {
 
 host_tae_representation::host_tae_representation(
   cucascade::memory::memory_space* memory_space,
-  std::vector<uint8_t> host_data,
+  pinned_host_buffer host_data,
   std::vector<column_chunk_info> chunks,
   std::size_t total_rows,
   std::size_t compressed_bytes,
@@ -36,7 +36,7 @@ host_tae_representation::host_tae_representation(
       }
       return *memory_space;
     }()),
-    _host_data(std::make_shared<std::vector<uint8_t>>(std::move(host_data))),
+    _host_data(std::make_shared<pinned_host_buffer>(std::move(host_data))),
     _chunks(std::move(chunks)),
     _total_rows(total_rows),
     _compressed_bytes(compressed_bytes),

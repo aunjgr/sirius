@@ -115,6 +115,25 @@ std::size_t compute_varchar_total_chars(const uint8_t* d_varlena_base,
                                         rmm::cuda_stream_view stream);
 
 /**
+ * @brief Async variant — launches the reduction kernel without synchronizing.
+ *
+ * The caller must zero d_total before the call and synchronize the stream
+ * after all async launches to read the result.  Used to batch multiple
+ * per-block total-chars computations with a single sync.
+ *
+ * @param d_varlena_base  Pointer to the varlena struct array
+ * @param d_area_base     Pointer to the area section
+ * @param n_rows          Number of rows
+ * @param d_total         Device accumulator (must be pre-zeroed)
+ * @param stream          CUDA stream
+ */
+void compute_varchar_total_chars_async(const uint8_t* d_varlena_base,
+                                       const uint8_t* d_area_base,
+                                       uint32_t n_rows,
+                                       unsigned long long* d_total,
+                                       rmm::cuda_stream_view stream);
+
+/**
  * @brief Invert a MO null bitmap to cuDF validity bitmask.
  *
  * MO: bit=1 means NULL.  cuDF: bit=1 means VALID.
