@@ -345,16 +345,8 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
         std::size_t chunk_index;   // for null mask pass
       };
 
-      // === Sync 1: Batch read actual_data_lens for all varchar blocks ===
-      std::vector<uint32_t> batch_data_lens(chunk_refs.size());
-      for (std::size_t i = 0; i < chunk_refs.size(); i++) {
-        auto* d_ptr = chunk_device_ptrs[chunk_refs[i].chunk_index];
-        CUDF_CUDA_TRY(cudaMemcpyAsync(&batch_data_lens[i], d_ptr + 25, sizeof(uint32_t),
-                                       cudaMemcpyDeviceToHost, stream.value()));
-      }
-      stream.synchronize();
-
-      // Build block_info using known data_lens
+      // Build block_info using metadata-derived data_len (no GPU read needed).
+      // For FLAT varchar vectors, data_len = row_count * VARLENA_STRUCT_SIZE (24).
       std::vector<block_info> blocks;
       blocks.reserve(chunk_refs.size());
       for (std::size_t i = 0; i < chunk_refs.size(); i++) {
@@ -362,7 +354,7 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
         auto& chunk = chunks[cr.chunk_index];
         auto* d_ptr = chunk_device_ptrs[cr.chunk_index];
         auto d_size = get_chunk_decompressed_size(cr.chunk_index);
-        uint32_t actual_data_len = batch_data_lens[i];
+        uint32_t actual_data_len = chunk.row_count * VARLENA_STRUCT_SIZE;
 
         if (VEC_HEADER_SIZE + actual_data_len > d_size) {
           throw std::runtime_error("varchar varlena section exceeds decompressed buffer");
@@ -373,7 +365,7 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
         blocks.push_back({d_varlena, d_area, d_size, chunk.row_count, actual_data_len, 0, cr.chunk_index});
       }
 
-      // === Sync 2: Compute total chars per block via GPU sum_lengths kernel ===
+      // === Single sync: launch sum_lengths + area_len reads, then batch D→H ===
       std::vector<unsigned long long> h_block_totals(blocks.size());
       {
         rmm::device_uvector<unsigned long long> d_totals(blocks.size(), stream, mr_ref);
@@ -383,23 +375,22 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
           cuda::tae::compute_varchar_total_chars_async(blocks[i].d_data, blocks[i].d_area, blocks[i].rows,
                                  d_totals.data() + i, stream);
         }
-        stream.synchronize();
-        CUDF_CUDA_TRY(cudaMemcpy(h_block_totals.data(), d_totals.data(),
-                                  blocks.size() * sizeof(unsigned long long),
-                                  cudaMemcpyDeviceToHost));
-      }
-
-      // Also batch-read area_lens for blocks that have nulls
-      for (std::size_t i = 0; i < blocks.size(); i++) {
-        auto& chunk = chunks[blocks[i].chunk_index];
-        if (chunk.null_cnt > 0) {
-          auto* d_ptr = chunk_device_ptrs[blocks[i].chunk_index];
-          CUDF_CUDA_TRY(cudaMemcpyAsync(&blocks[i].area_len,
-                                         d_ptr + VEC_HEADER_SIZE + blocks[i].actual_data_len,
-                                         sizeof(uint32_t), cudaMemcpyDeviceToHost, stream.value()));
+        // Area_len reads for blocks with nulls (overlaps with sum_lengths on same stream)
+        for (std::size_t i = 0; i < blocks.size(); i++) {
+          auto& chunk = chunks[blocks[i].chunk_index];
+          if (chunk.null_cnt > 0) {
+            auto* d_ptr = chunk_device_ptrs[blocks[i].chunk_index];
+            CUDF_CUDA_TRY(cudaMemcpyAsync(&blocks[i].area_len,
+                                           d_ptr + VEC_HEADER_SIZE + blocks[i].actual_data_len,
+                                           sizeof(uint32_t), cudaMemcpyDeviceToHost, stream.value()));
+          }
         }
+        // D→H of totals (async, waits for sum_lengths on same stream)
+        CUDF_CUDA_TRY(cudaMemcpyAsync(h_block_totals.data(), d_totals.data(),
+                                       blocks.size() * sizeof(unsigned long long),
+                                       cudaMemcpyDeviceToHost, stream.value()));
+        stream.synchronize();
       }
-      stream.synchronize();
 
       // Compute per-block char offsets and grand total on host
       std::size_t grand_total_chars = 0;
