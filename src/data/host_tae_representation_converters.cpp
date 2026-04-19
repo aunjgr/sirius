@@ -296,9 +296,6 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
       throw std::runtime_error("nvcompBatchedLZ4DecompressAsync failed: " +
                                std::to_string(status));
     }
-
-    SIRIUS_LOG_INFO("[tae_converter] nvCOMP LZ4 decompress: {} chunks, {} → {} bytes",
-                    num_chunks_to_decompress, total_compressed, total_decompressed);
   }
 
   // 7. Pre-built chunk→device_ptr map (O(1) lookup, replaces O(n) linear scan)
@@ -367,12 +364,6 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
         auto d_size = get_chunk_decompressed_size(cr.chunk_index);
         uint32_t actual_data_len = batch_data_lens[i];
 
-        uint32_t expected_data_len = chunk.row_count * VARLENA_STRUCT_SIZE;
-        if (actual_data_len != expected_data_len) {
-          SIRIUS_LOG_WARN("[tae_converter] varchar chunk {}: dataLen={} (expected {} for {} rows) — may be CONSTANT vector",
-                       cr.chunk_index, actual_data_len, expected_data_len, chunk.row_count);
-        }
-
         if (VEC_HEADER_SIZE + actual_data_len > d_size) {
           throw std::runtime_error("varchar varlena section exceeds decompressed buffer");
         }
@@ -382,18 +373,23 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
         blocks.push_back({d_varlena, d_area, d_size, chunk.row_count, actual_data_len, 0, cr.chunk_index});
       }
 
-      // === Sync 2: Batch compute total chars + batch read area_lens ===
-      // Launch async sum-lengths kernels for all blocks (no sync between them)
-      rmm::device_uvector<unsigned long long> d_block_totals(blocks.size(), stream, mr_ref);
-      CUDF_CUDA_TRY(cudaMemsetAsync(d_block_totals.data(), 0,
-                                     blocks.size() * sizeof(unsigned long long), stream.value()));
-      for (std::size_t i = 0; i < blocks.size(); i++) {
-        cuda::tae::compute_varchar_total_chars_async(
-          blocks[i].d_data, blocks[i].d_area, blocks[i].rows,
-          d_block_totals.data() + i, stream);
+      // === Sync 2: Compute total chars per block via GPU sum_lengths kernel ===
+      std::vector<unsigned long long> h_block_totals(blocks.size());
+      {
+        rmm::device_uvector<unsigned long long> d_totals(blocks.size(), stream, mr_ref);
+        CUDF_CUDA_TRY(cudaMemsetAsync(d_totals.data(), 0,
+                                       blocks.size() * sizeof(unsigned long long), stream.value()));
+        for (std::size_t i = 0; i < blocks.size(); i++) {
+          cuda::tae::compute_varchar_total_chars_async(blocks[i].d_data, blocks[i].d_area, blocks[i].rows,
+                                 d_totals.data() + i, stream);
+        }
+        stream.synchronize();
+        CUDF_CUDA_TRY(cudaMemcpy(h_block_totals.data(), d_totals.data(),
+                                  blocks.size() * sizeof(unsigned long long),
+                                  cudaMemcpyDeviceToHost));
       }
 
-      // Also batch-read area_lens for blocks that have nulls (same sync)
+      // Also batch-read area_lens for blocks that have nulls
       for (std::size_t i = 0; i < blocks.size(); i++) {
         auto& chunk = chunks[blocks[i].chunk_index];
         if (chunk.null_cnt > 0) {
@@ -403,12 +399,6 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
                                          sizeof(uint32_t), cudaMemcpyDeviceToHost, stream.value()));
         }
       }
-
-      // D2H copy of block totals
-      std::vector<unsigned long long> h_block_totals(blocks.size());
-      CUDF_CUDA_TRY(cudaMemcpyAsync(h_block_totals.data(), d_block_totals.data(),
-                                     blocks.size() * sizeof(unsigned long long),
-                                     cudaMemcpyDeviceToHost, stream.value()));
       stream.synchronize();
 
       // Compute per-block char offsets and grand total on host
@@ -424,22 +414,23 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
         (col_total_rows + 1) * sizeof(int32_t), stream, mr_ref);
       auto chars_buf = rmm::device_buffer(grand_total_chars, stream, mr_ref);
 
-      // === Phase 3: Decode all blocks — no further syncs needed ===
-      // Per-block char offsets were pre-computed above, eliminating the
-      // sequential last_offset reads that previously required N syncs.
+      // === Phase 3: Decode all blocks ===
+      // CUB temp storage is queried once for the largest block, then reused.
+      std::size_t max_temp_bytes = 0;
+      for (auto& bi : blocks) {
+        std::size_t tb = 0;
+        cuda::tae::decode_varchar(nullptr, nullptr, nullptr, nullptr, nullptr, tb, bi.rows, stream);
+        max_temp_bytes = std::max(max_temp_bytes, tb);
+      }
+      rmm::device_buffer d_temp(max_temp_bytes, stream, mr_ref);
+
       std::size_t row_offset = 0;
       for (std::size_t i = 0; i < blocks.size(); i++) {
         auto& bi = blocks[i];
         auto* d_offsets_out = static_cast<int32_t*>(offsets_buf.data()) + row_offset;
         auto* d_chars_out = static_cast<uint8_t*>(chars_buf.data()) + block_char_offsets[i];
 
-        // Query CUB temp storage size first
-        std::size_t temp_bytes = 0;
-        cuda::tae::decode_varchar(
-          bi.d_data, bi.d_area, d_offsets_out, d_chars_out, nullptr, temp_bytes, bi.rows, stream);
-
-        // Allocate temp storage and decode (produces local offsets starting from 0)
-        rmm::device_buffer d_temp(temp_bytes, stream, mr_ref);
+        std::size_t temp_bytes = max_temp_bytes;
         cuda::tae::decode_varchar(
           bi.d_data, bi.d_area, d_offsets_out, d_chars_out, d_temp.data(), temp_bytes, bi.rows, stream);
 
@@ -460,7 +451,7 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
         rmm::device_buffer{},
         0);
 
-      // Build null mask using pre-read area_lens (no sync needed)
+      // Build null mask
       uint32_t total_nulls = 0;
       for (auto& cr : chunk_refs) {
         total_nulls += chunks[cr.chunk_index].null_cnt;

@@ -17,6 +17,7 @@
 #include <cuda/tae/tae_decode_kernels.hpp>
 
 #include <cub/cub.cuh>
+#include <cub/block/block_reduce.cuh>
 #include <cuda_runtime.h>
 
 #include <rmm/device_uvector.hpp>
@@ -99,27 +100,32 @@ __global__ void scatter_chars_kernel(const uint8_t* __restrict__ varlena_base,
   }
 }
 
-// Kernel: sum reduction for total chars (used by compute_varchar_total_chars)
+// Kernel: sum reduction for total chars using CUB::BlockReduce
 __global__ void sum_lengths_kernel(const uint8_t* __restrict__ varlena_base,
                                    const uint8_t* __restrict__ area_base,
                                    uint32_t n_rows,
                                    unsigned long long* __restrict__ total)
 {
-  __shared__ unsigned long long block_sum;
-  if (threadIdx.x == 0) block_sum = 0;
-  __syncthreads();
+  using BlockReduce = cub::BlockReduce<unsigned long long, THREADS_PER_BLOCK>;
+  __shared__ typename BlockReduce::TempStorage temp_storage;
 
-  VarlenaReader reader{varlena_base, area_base};
   unsigned long long thread_sum = 0;
   for (uint32_t i = blockIdx.x * blockDim.x + threadIdx.x; i < n_rows;
        i += gridDim.x * blockDim.x) {
-    thread_sum += reader.get_length(i);
+    const uint8_t* v = varlena_base + i * VARLENA_SIZE;
+    uint8_t first = v[0];
+    if (first <= VARLENA_INLINE_MAX) {
+      thread_sum += first;
+    } else {
+      uint32_t len;
+      memcpy(&len, v + 8, 4);
+      thread_sum += len;
+    }
   }
-
-  atomicAdd(&block_sum, thread_sum);
-  __syncthreads();
-
-  if (threadIdx.x == 0) { atomicAdd(total, block_sum); }
+  unsigned long long block_total = BlockReduce(temp_storage).Sum(thread_sum);
+  if (threadIdx.x == 0 && block_total > 0) {
+    atomicAdd(total, block_total);
+  }
 }
 
 }  // anonymous namespace
@@ -138,6 +144,15 @@ void decode_varchar(const uint8_t* d_varlena_base,
     return;
   }
 
+  // CUB temp storage size query — only needs n_rows, no kernel launches
+  cub::DeviceScan::ExclusiveSum(
+    d_temp_storage, temp_bytes, d_offsets, d_offsets, n_rows + 1, stream.value());
+
+  if (!d_temp_storage) {
+    // Size query only — caller will allocate and call again
+    return;
+  }
+
   uint32_t blocks = (n_rows + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
 
   // Step 1: Compute per-row lengths into d_offsets[0..n_rows-1]
@@ -148,11 +163,6 @@ void decode_varchar(const uint8_t* d_varlena_base,
   //         d_offsets[n_rows] = total chars
   cub::DeviceScan::ExclusiveSum(
     d_temp_storage, temp_bytes, d_offsets, d_offsets, n_rows + 1, stream.value());
-
-  if (!d_temp_storage) {
-    // Size query only — caller will allocate and call again
-    return;
-  }
 
   // Step 3: Scatter character data
   scatter_chars_kernel<<<blocks, THREADS_PER_BLOCK, 0, stream.value()>>>(

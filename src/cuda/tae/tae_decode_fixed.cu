@@ -16,6 +16,8 @@
 
 #include <cuda/tae/tae_decode_kernels.hpp>
 
+#include <cudf/utilities/error.hpp>
+
 #include <cuda_runtime.h>
 
 #include <cstdint>
@@ -26,39 +28,33 @@ namespace {
 
 constexpr uint32_t THREADS_PER_BLOCK = 256;
 
-// Generic copy kernel for fixed-width elements (no epoch adjustment)
-__global__ void copy_fixed_kernel(const uint8_t* __restrict__ src,
-                                  uint8_t* __restrict__ dst,
-                                  uint32_t n_rows,
-                                  uint32_t elem_size)
-{
-  uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
-  // Process as bytes — each thread handles one byte offset
-  uint32_t total_bytes = n_rows * elem_size;
-  for (uint32_t i = tid; i < total_bytes; i += gridDim.x * blockDim.x) {
-    dst[i] = src[i];
-  }
-}
-
-// Epoch adjustment kernel for 4-byte types (DATE: int32)
-__global__ void adjust_epoch_i32_kernel(int32_t* __restrict__ data,
-                                        uint32_t n_rows,
-                                        int32_t adjust)
+// Fused copy + epoch adjustment kernel for 4-byte types (DATE: int32)
+// Source may be unaligned (MO vector header is 29 bytes), destination is aligned.
+__global__ void copy_and_adjust_i32_kernel(const uint8_t* __restrict__ src,
+                                           int32_t* __restrict__ dst,
+                                           uint32_t n_rows,
+                                           int32_t adjust)
 {
   uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
   for (uint32_t i = tid; i < n_rows; i += gridDim.x * blockDim.x) {
-    data[i] -= adjust;
+    int32_t val;
+    memcpy(&val, src + i * sizeof(int32_t), sizeof(int32_t));
+    dst[i] = val - adjust;
   }
 }
 
-// Epoch adjustment kernel for 8-byte types (TIMESTAMP/DATETIME: int64)
-__global__ void adjust_epoch_i64_kernel(int64_t* __restrict__ data,
-                                        uint32_t n_rows,
-                                        int64_t adjust)
+// Fused copy + epoch adjustment kernel for 8-byte types (TIMESTAMP/DATETIME: int64)
+// Source may be unaligned (MO vector header is 29 bytes), destination is aligned.
+__global__ void copy_and_adjust_i64_kernel(const uint8_t* __restrict__ src,
+                                           int64_t* __restrict__ dst,
+                                           uint32_t n_rows,
+                                           int64_t adjust)
 {
   uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
   for (uint32_t i = tid; i < n_rows; i += gridDim.x * blockDim.x) {
-    data[i] -= adjust;
+    int64_t val;
+    memcpy(&val, src + i * sizeof(int64_t), sizeof(int64_t));
+    dst[i] = val - adjust;
   }
 }
 
@@ -73,22 +69,24 @@ void decode_fixed_width(const uint8_t* d_src,
 {
   if (n_rows == 0) return;
 
-  // Caller provides a pointer directly to the data section (past vector header).
-  uint32_t total_bytes      = n_rows * elem_size;
-  uint32_t blocks           = (total_bytes + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
-
-  copy_fixed_kernel<<<blocks, THREADS_PER_BLOCK, 0, stream.value()>>>(
-    d_src, d_dst, n_rows, elem_size);
-
-  // Apply epoch adjustment if needed
-  if (epoch_adjust != 0) {
+  if (epoch_adjust == 0) {
+    // No adjustment — caller already uses cudaMemcpyAsync D2D for this case,
+    // but handle it here as fallback.
+    CUDF_CUDA_TRY(cudaMemcpyAsync(d_dst, d_src, n_rows * elem_size,
+                                   cudaMemcpyDeviceToDevice, stream.value()));
+  } else {
+    // Fused copy + epoch adjustment in a single pass (halves memory bandwidth)
     uint32_t row_blocks = (n_rows + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
     if (elem_size == 4) {
-      adjust_epoch_i32_kernel<<<row_blocks, THREADS_PER_BLOCK, 0, stream.value()>>>(
-        reinterpret_cast<int32_t*>(d_dst), n_rows, static_cast<int32_t>(epoch_adjust));
+      copy_and_adjust_i32_kernel<<<row_blocks, THREADS_PER_BLOCK, 0, stream.value()>>>(
+        d_src, reinterpret_cast<int32_t*>(d_dst), n_rows, static_cast<int32_t>(epoch_adjust));
     } else if (elem_size == 8) {
-      adjust_epoch_i64_kernel<<<row_blocks, THREADS_PER_BLOCK, 0, stream.value()>>>(
-        reinterpret_cast<int64_t*>(d_dst), n_rows, epoch_adjust);
+      copy_and_adjust_i64_kernel<<<row_blocks, THREADS_PER_BLOCK, 0, stream.value()>>>(
+        d_src, reinterpret_cast<int64_t*>(d_dst), n_rows, epoch_adjust);
+    } else {
+      // Fallback for unusual element sizes with epoch adjustment — shouldn't happen
+      CUDF_CUDA_TRY(cudaMemcpyAsync(d_dst, d_src, n_rows * elem_size,
+                                     cudaMemcpyDeviceToDevice, stream.value()));
     }
   }
 }
