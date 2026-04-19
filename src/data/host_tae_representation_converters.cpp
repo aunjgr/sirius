@@ -331,9 +331,6 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
     if (is_varchar_type(type_oid)) {
       // VARCHAR: build cuDF offsets + chars from MO varlena format
       // MO vector layout: [header 29B][varlena_structs row_count*24B][areaLen 4B][area...][nsp...]
-      //
-      // Performance: batched GPU reads reduce stream.synchronize() calls from
-      // 4N (one per block per phase) down to 2 total syncs.
 
       struct block_info {
         uint8_t* d_data;        // pointer to varlena struct array
@@ -375,7 +372,7 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
           cuda::tae::compute_varchar_total_chars_async(blocks[i].d_data, blocks[i].d_area, blocks[i].rows,
                                  d_totals.data() + i, stream);
         }
-        // Area_len reads for blocks with nulls (overlaps with sum_lengths on same stream)
+        // Area_len reads for blocks with nulls (batched before single sync)
         for (std::size_t i = 0; i < blocks.size(); i++) {
           auto& chunk = chunks[blocks[i].chunk_index];
           if (chunk.null_cnt > 0) {
@@ -406,13 +403,11 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
       auto chars_buf = rmm::device_buffer(grand_total_chars, stream, mr_ref);
 
       // === Phase 3: Decode all blocks ===
-      // CUB temp storage is queried once for the largest block, then reused.
+      // CUB temp size depends only on row count; query once with max.
+      uint32_t max_block_rows = 0;
+      for (auto& bi : blocks) max_block_rows = std::max(max_block_rows, bi.rows);
       std::size_t max_temp_bytes = 0;
-      for (auto& bi : blocks) {
-        std::size_t tb = 0;
-        cuda::tae::decode_varchar(nullptr, nullptr, nullptr, nullptr, nullptr, tb, bi.rows, stream);
-        max_temp_bytes = std::max(max_temp_bytes, tb);
-      }
+      cuda::tae::decode_varchar(nullptr, nullptr, nullptr, nullptr, nullptr, max_temp_bytes, max_block_rows, stream);
       rmm::device_buffer d_temp(max_temp_bytes, stream, mr_ref);
 
       std::size_t row_offset = 0;

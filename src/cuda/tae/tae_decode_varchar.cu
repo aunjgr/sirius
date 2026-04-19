@@ -20,8 +20,6 @@
 #include <cub/block/block_reduce.cuh>
 #include <cuda_runtime.h>
 
-#include <rmm/device_uvector.hpp>
-
 #include <cstdint>
 
 namespace sirius::cuda::tae {
@@ -56,18 +54,13 @@ struct VarlenaReader {
     const uint8_t* v = base + row * VARLENA_SIZE;
     uint8_t first    = v[0];
     if (first <= VARLENA_INLINE_MAX) {
-      for (uint32_t i = 0; i < first; i++) {
-        dst[i] = v[1 + i];
-      }
+      memcpy(dst, v + 1, first);
     } else {
-      // Big format: bytes 4..7 = offset into area data
       uint32_t offset;
       memcpy(&offset, v + 4, 4);
       uint32_t len;
       memcpy(&len, v + 8, 4);
-      for (uint32_t i = 0; i < len; i++) {
-        dst[i] = area_base[offset + i];
-      }
+      memcpy(dst, area_base + offset, len);
     }
   }
 };
@@ -183,29 +176,6 @@ void adjust_offsets(int32_t* d_offsets, int32_t base, uint32_t count, rmm::cuda_
   if (count == 0 || base == 0) return;
   uint32_t blocks = (count + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
   adjust_offsets_kernel<<<blocks, THREADS_PER_BLOCK, 0, stream.value()>>>(d_offsets, base, count);
-}
-
-std::size_t compute_varchar_total_chars(const uint8_t* d_varlena_base,
-                                        const uint8_t* d_area_base,
-                                        uint32_t n_rows,
-                                        rmm::cuda_stream_view stream)
-{
-  if (n_rows == 0) return 0;
-
-  uint32_t blocks = (n_rows + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
-
-  rmm::device_uvector<unsigned long long> d_total(1, stream);
-  cudaMemsetAsync(d_total.data(), 0, sizeof(unsigned long long), stream.value());
-
-  sum_lengths_kernel<<<blocks, THREADS_PER_BLOCK, 0, stream.value()>>>(
-    d_varlena_base, d_area_base, n_rows, d_total.data());
-
-  unsigned long long h_total = 0;
-  cudaMemcpyAsync(&h_total, d_total.data(), sizeof(unsigned long long), cudaMemcpyDeviceToHost,
-                  stream.value());
-  stream.synchronize();
-
-  return static_cast<std::size_t>(h_total);
 }
 
 void compute_varchar_total_chars_async(const uint8_t* d_varlena_base,

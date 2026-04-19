@@ -97,29 +97,13 @@ void adjust_offsets(int32_t* d_offsets,
                     uint32_t count,
                     rmm::cuda_stream_view stream);
 
-/**
- * @brief Compute the total character data size for a varlena column.
- *
- * Used to pre-allocate the chars buffer before calling decode_varchar.
- * Runs a parallel reduction over varlena lengths.
- *
- * @param d_varlena_base  Pointer to the varlena struct array (data section)
- * @param d_area_base     Pointer to the area section (for big string reads)
- * @param n_rows          Number of rows
- * @param stream          CUDA stream
- * @return Total bytes needed for the chars buffer
- */
-std::size_t compute_varchar_total_chars(const uint8_t* d_varlena_base,
-                                        const uint8_t* d_area_base,
-                                        uint32_t n_rows,
-                                        rmm::cuda_stream_view stream);
 
 /**
- * @brief Async variant — launches the reduction kernel without synchronizing.
+ * @brief Compute total character data size for a varlena column (async).
  *
- * The caller must zero d_total before the call and synchronize the stream
- * after all async launches to read the result.  Used to batch multiple
- * per-block total-chars computations with a single sync.
+ * Launches a GPU reduction kernel without synchronizing. The caller must
+ * zero d_total before the call and synchronize the stream after all async
+ * launches to read the result.
  *
  * @param d_varlena_base  Pointer to the varlena struct array
  * @param d_area_base     Pointer to the area section
@@ -133,11 +117,12 @@ void compute_varchar_total_chars_async(const uint8_t* d_varlena_base,
                                        unsigned long long* d_total,
                                        rmm::cuda_stream_view stream);
 
+
 /**
  * @brief Invert a MO null bitmap to cuDF validity bitmask.
  *
  * MO: bit=1 means NULL.  cuDF: bit=1 means VALID.
- * Simply XOR each 32-bit word with 0xFFFFFFFF.
+ * Simply bitwise-NOT each 32-bit word.
  *
  * @param d_src       Pointer to the MO null bitmap words (in the nsp section,
  *                    after the 24-byte nsp header: count+len+dataSize)
