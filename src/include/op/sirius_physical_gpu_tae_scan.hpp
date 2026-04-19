@@ -22,6 +22,7 @@
 #include "duckdb/planner/table_filter.hpp"
 #include "duckdb/storage/data_table.hpp"
 #include "expression_executor/gpu_expression_translator.hpp"
+#include "helper/type_conversions.hpp"
 #include "op/sirius_physical_operator.hpp"
 #include "op/sirius_physical_table_scan.hpp"
 
@@ -35,10 +36,10 @@ class sirius_physical_gpu_tae_scan : public sirius_physical_operator {
  public:
   sirius_physical_gpu_tae_scan(sirius_physical_table_scan* table_scan);
 
-  sirius_physical_gpu_tae_scan(duckdb::vector<duckdb::LogicalType> types,
+  sirius_physical_gpu_tae_scan(duckdb::vector<sirius::logical_type> types,
                                duckdb::TableFunction function,
                                duckdb::unique_ptr<duckdb::FunctionData> bind_data,
-                               duckdb::vector<duckdb::LogicalType> returned_types,
+                               duckdb::vector<sirius::logical_type> returned_types,
                                duckdb::vector<duckdb::ColumnIndex> column_ids,
                                duckdb::vector<std::size_t> projection_ids,
                                duckdb::vector<std::string> names,
@@ -60,7 +61,7 @@ class sirius_physical_gpu_tae_scan : public sirius_physical_operator {
   //! Bind data of the function
   duckdb::unique_ptr<duckdb::FunctionData> bind_data;
   //! The types of ALL columns that can be returned by the table function
-  duckdb::vector<duckdb::LogicalType> returned_types;
+  duckdb::vector<sirius::logical_type> returned_types;
   //! The column ids used within the table function
   duckdb::vector<duckdb::ColumnIndex> column_ids;
   //! The projected-out column ids
@@ -82,7 +83,7 @@ class sirius_physical_gpu_tae_scan : public sirius_physical_operator {
 
   duckdb::unique_ptr<duckdb::ColumnDataCollection> collection;
 
-  duckdb::vector<duckdb::LogicalType> scanned_types;
+  duckdb::vector<sirius::logical_type> scanned_types;
   duckdb::vector<std::size_t> scanned_ids;
 
   std::atomic<bool> exhausted{false};

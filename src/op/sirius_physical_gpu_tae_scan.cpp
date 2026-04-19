@@ -44,10 +44,10 @@ sirius_physical_gpu_tae_scan::sirius_physical_gpu_tae_scan(sirius_physical_table
 }
 
 sirius_physical_gpu_tae_scan::sirius_physical_gpu_tae_scan(
-  duckdb::vector<duckdb::LogicalType> types,
+  duckdb::vector<sirius::logical_type> types,
   duckdb::TableFunction function_p,
   duckdb::unique_ptr<duckdb::FunctionData> bind_data_p,
-  duckdb::vector<duckdb::LogicalType> returned_types_p,
+  duckdb::vector<sirius::logical_type> returned_types_p,
   duckdb::vector<duckdb::ColumnIndex> column_ids_p,
   duckdb::vector<std::size_t> projection_ids_p,
   duckdb::vector<std::string> names_p,

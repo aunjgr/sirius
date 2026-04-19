@@ -361,11 +361,10 @@ std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_
     int32_t width = 0, scale = 0;
     if (r.seqnum < mo_oids.size()) { type_oid = static_cast<tae::MOTypeOid>(mo_oids[r.seqnum]); }
 
-    // Get decimal width/scale from DuckDB returned_types (which has proper DECIMAL info)
-    if (r.seqnum < returned_types.size() &&
-        returned_types[r.seqnum].id() == duckdb::LogicalTypeId::DECIMAL) {
-      width = static_cast<int32_t>(duckdb::DecimalType::GetWidth(returned_types[r.seqnum]));
-      scale = static_cast<int32_t>(duckdb::DecimalType::GetScale(returned_types[r.seqnum]));
+    // Get decimal width/scale from returned_types (which has proper DECIMAL info)
+    if (r.seqnum < returned_types.size() && returned_types[r.seqnum].is_decimal()) {
+      width = static_cast<int32_t>(returned_types[r.seqnum].decimal_precision());
+      scale = static_cast<int32_t>(returned_types[r.seqnum].decimal_scale());
     }
 
     // Find null_cnt from metadata
