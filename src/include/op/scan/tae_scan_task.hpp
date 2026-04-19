@@ -26,6 +26,9 @@
 #include <sirius_context.hpp>
 #include <tae/tae_format.hpp>
 
+// tae-scanner (zone map filtering)
+#include "tae_scanner.hpp"
+
 // cucascade
 #include <cucascade/data/data_repository.hpp>
 #include <cucascade/memory/memory_space.hpp>
@@ -115,6 +118,11 @@ class tae_scan_task_global_state : public pipeline::sirius_pipeline_task_global_
     return _post_filter_projection_ids;
   }
 
+  [[nodiscard]] std::vector<tae::PushedFilter> const& get_pushed_filters() const
+  {
+    return _pushed_filters;
+  }
+
   void rebind(duckdb::shared_ptr<pipeline::sirius_pipeline> pipeline,
               sirius_physical_gpu_tae_scan* scan_op)
   {
@@ -140,6 +148,9 @@ class tae_scan_task_global_state : public pipeline::sirius_pipeline_task_global_
   // Filter state
   std::shared_ptr<gpu_expression_translator::translated_expression> _translated_filter;
   std::vector<std::size_t> _post_filter_projection_ids;
+
+  // Zone-map pushed filters (extracted from DuckDB TableFilterSet)
+  std::vector<tae::PushedFilter> _pushed_filters;
 };
 
 //===----------------------------------------------------------------------===//

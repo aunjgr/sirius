@@ -26,6 +26,9 @@
 // tae-scanner (for TAEScanBindData access)
 #include "tae_scanner.hpp"
 
+// tae-scanner (zone map filtering)
+#include "tae_filter.hpp"
+
 // lz4 (for metadata decompression only — column data is decompressed on GPU)
 #include <lz4.h>
 
@@ -35,6 +38,7 @@
 // standard library
 #include <algorithm>
 #include <cstring>
+#include <set>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -177,6 +181,23 @@ tae_scan_task_global_state::tae_scan_task_global_state(
     _post_filter_projection_ids.push_back(scan_op->projection_ids[i]);
   }
 
+  // Extract pushed filters from DuckDB TableFilterSet for zone-map pruning.
+  // Each table_filters entry is keyed by column_ids index; we resolve the TAE
+  // seqnum and MO type to build PushedFilter structs that zone map evaluation needs.
+  if (scan_op->table_filters) {
+    auto& col_ids = scan_op->column_ids;
+    for (auto& [col_idx, filter] : scan_op->table_filters->filters) {
+      if (col_idx >= col_ids.size()) continue;
+      auto seqnum    = static_cast<uint16_t>(col_ids[col_idx].GetPrimaryIndex());
+      uint8_t mo_oid = (seqnum < _all_col_mo_oids.size()) ? _all_col_mo_oids[seqnum] : 0;
+      tae::ExtractFilter(*filter, static_cast<uint16_t>(col_idx), seqnum, mo_oid, _pushed_filters);
+    }
+    if (!_pushed_filters.empty()) {
+      SIRIUS_LOG_INFO("[tae_scan_task_global_state] extracted {} zone-map filters",
+                      _pushed_filters.size());
+    }
+  }
+
   if (_partitions.empty()) {
     scan_op->exhausted.store(true, std::memory_order_relaxed);
     scan_op->has_more_partitions.store(false, std::memory_order_relaxed);
@@ -305,9 +326,36 @@ std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_
   std::vector<ReadChunk> reads;
   uint32_t total_rows = 0;
 
+  // Zone-map pruning: collect unique filter seqnums for efficient per-block check
+  auto& pushed_filters = g_state.get_pushed_filters();
+  std::vector<uint16_t> filter_seqnums;
+  {
+    std::set<uint16_t> seen;
+    for (auto& pf : pushed_filters) {
+      if (seen.insert(pf.seqnum).second) filter_seqnums.push_back(pf.seqnum);
+    }
+  }
+  uint32_t blocks_pruned = 0;
+
   for (uint32_t b = 0; b < obj_meta.block_count; b++) {
     auto& blk = obj_meta.blocks[b];
-    // TODO: zone map filtering could skip blocks here
+
+    // Zone-map filtering: check if block can match all pushed filters
+    if (!filter_seqnums.empty()) {
+      bool passes = true;
+      for (auto seq : filter_seqnums) {
+        if (seq < blk.columns.size() &&
+            !tae::ZoneMapPassesFilters(pushed_filters, blk.columns[seq].zone_map, seq)) {
+          passes = false;
+          break;
+        }
+      }
+      if (!passes) {
+        blocks_pruned++;
+        continue;
+      }
+    }
+
     total_rows += blk.rows;
     for (std::size_t si = 0; si < projected_seqnums.size(); si++) {
       auto seq = projected_seqnums[si];
@@ -323,6 +371,11 @@ std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_
                        b,
                        blk.rows});
     }
+  }
+
+  if (blocks_pruned > 0) {
+    SIRIUS_LOG_INFO(
+      "[tae_scan_task] zone-map pruned {}/{} blocks", blocks_pruned, obj_meta.block_count);
   }
 
   if (reads.empty() || total_rows == 0) {
@@ -350,10 +403,14 @@ std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_
   std::size_t write_offset = 0;
 
   for (auto& r : reads) {
-    auto compressed = read_bytes(fs, *handle, r.offset, r.compressed_length, crc);
-
-    // Copy into host buffer
-    std::memcpy(host_data.data() + write_offset, compressed.data(), compressed.size());
+    // Read compressed data directly into pinned buffer to avoid a temp allocation + memcpy.
+    // CRC files still need the stripping pass through an intermediate buffer.
+    if (!crc) {
+      fs.Read(*handle, host_data.data() + write_offset, r.compressed_length, r.offset);
+    } else {
+      auto compressed = read_bytes(fs, *handle, r.offset, r.compressed_length, crc);
+      std::memcpy(host_data.data() + write_offset, compressed.data(), compressed.size());
+    }
 
     // Find the MO type for this column
     auto& mo_oids           = g_state.get_column_mo_oids();
