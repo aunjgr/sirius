@@ -30,8 +30,7 @@ namespace op {
 
 class sirius_physical_gpu_tae_scan : public sirius_physical_operator {
  public:
-  static constexpr const SiriusPhysicalOperatorType TYPE =
-    SiriusPhysicalOperatorType::GPU_TAE_SCAN;
+  static constexpr const SiriusPhysicalOperatorType TYPE = SiriusPhysicalOperatorType::GPU_TAE_SCAN;
 
  public:
   sirius_physical_gpu_tae_scan(sirius_physical_table_scan* table_scan);

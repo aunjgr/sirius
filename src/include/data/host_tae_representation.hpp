@@ -59,7 +59,8 @@ struct pinned_host_buffer {
       if (_pinned) {
         auto err = cudaMallocHost(&_ptr, n);
         if (err != cudaSuccess) {
-          throw std::runtime_error(std::string("cudaMallocHost failed: ") + cudaGetErrorString(err));
+          throw std::runtime_error(std::string("cudaMallocHost failed: ") +
+                                   cudaGetErrorString(err));
         }
       } else {
         _ptr = new uint8_t[n];
@@ -70,12 +71,15 @@ struct pinned_host_buffer {
   ~pinned_host_buffer()
   {
     if (_ptr) {
-      if (_pinned) cudaFreeHost(_ptr);
-      else delete[] static_cast<uint8_t*>(_ptr);
+      if (_pinned)
+        cudaFreeHost(_ptr);
+      else
+        delete[] static_cast<uint8_t*>(_ptr);
     }
   }
 
-  pinned_host_buffer(pinned_host_buffer&& o) noexcept : _ptr(o._ptr), _size(o._size), _pinned(o._pinned)
+  pinned_host_buffer(pinned_host_buffer&& o) noexcept
+    : _ptr(o._ptr), _size(o._size), _pinned(o._pinned)
   {
     o._ptr  = nullptr;
     o._size = 0;
@@ -85,8 +89,10 @@ struct pinned_host_buffer {
   {
     if (this != &o) {
       if (_ptr) {
-        if (_pinned) cudaFreeHost(_ptr);
-        else delete[] static_cast<uint8_t*>(_ptr);
+        if (_pinned)
+          cudaFreeHost(_ptr);
+        else
+          delete[] static_cast<uint8_t*>(_ptr);
       }
       _ptr    = o._ptr;
       _size   = o._size;
@@ -106,7 +112,7 @@ struct pinned_host_buffer {
   [[nodiscard]] bool is_pinned() const { return _pinned; }
 
  private:
-  void* _ptr       = nullptr;
+  void* _ptr        = nullptr;
   std::size_t _size = 0;
   bool _pinned      = false;
 };
@@ -132,15 +138,15 @@ class host_tae_representation : public cucascade::idata_representation {
    * @brief Metadata for a single column chunk within this representation.
    */
   struct column_chunk_info {
-    uint16_t            column_idx;          ///< Column ordinal in the TAE object
-    tae::MOTypeOid      type_oid;            ///< MO type for decode
-    int32_t             width;               ///< DECIMAL precision
-    int32_t             scale;               ///< DECIMAL scale
-    tae::Extent         extent;              ///< Compressed data location
-    uint32_t            null_cnt;            ///< Number of nulls in this chunk
-    uint32_t            row_count;           ///< Number of rows in the block
-    std::size_t         pinned_offset;       ///< Byte offset into host buffer
-    std::size_t         pinned_length;       ///< Byte count in host buffer (compressed)
+    uint16_t column_idx;        ///< Column ordinal in the TAE object
+    tae::MOTypeOid type_oid;    ///< MO type for decode
+    int32_t width;              ///< DECIMAL precision
+    int32_t scale;              ///< DECIMAL scale
+    tae::Extent extent;         ///< Compressed data location
+    uint32_t null_cnt;          ///< Number of nulls in this chunk
+    uint32_t row_count;         ///< Number of rows in the block
+    std::size_t pinned_offset;  ///< Byte offset into host buffer
+    std::size_t pinned_length;  ///< Byte count in host buffer (compressed)
   };
 
   /**
@@ -155,15 +161,14 @@ class host_tae_representation : public cucascade::idata_representation {
    * @param filter_expression  Optional pushdown filter.
    * @param post_filter_projection_ids  Column indices surviving filter.
    */
-  host_tae_representation(
-    cucascade::memory::memory_space* memory_space,
-    pinned_host_buffer host_data,
-    std::vector<column_chunk_info> chunks,
-    std::size_t total_rows,
-    std::size_t compressed_bytes,
-    std::size_t uncompressed_bytes,
-    std::shared_ptr<translated_expression> filter_expression = nullptr,
-    std::vector<std::size_t> post_filter_projection_ids      = {});
+  host_tae_representation(cucascade::memory::memory_space* memory_space,
+                          pinned_host_buffer host_data,
+                          std::vector<column_chunk_info> chunks,
+                          std::size_t total_rows,
+                          std::size_t compressed_bytes,
+                          std::size_t uncompressed_bytes,
+                          std::shared_ptr<translated_expression> filter_expression = nullptr,
+                          std::vector<std::size_t> post_filter_projection_ids      = {});
 
   // idata_representation interface
   std::unique_ptr<idata_representation> clone(rmm::cuda_stream_view stream) override;

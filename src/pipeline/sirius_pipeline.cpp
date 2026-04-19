@@ -24,6 +24,7 @@
 #include "op/sirius_physical_cpu_source.hpp"
 #include "op/sirius_physical_parquet_scan.hpp"
 #include "op/sirius_physical_gpu_tae_scan.hpp"
+#include "op/sirius_physical_parquet_scan.hpp"
 #include "pipeline/sirius_meta_pipeline.hpp"
 #include "sirius/exception.hpp"
 #include "sirius_engine.hpp"

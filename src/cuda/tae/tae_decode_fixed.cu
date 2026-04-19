@@ -14,10 +14,9 @@
  * limitations under the License.
  */
 
-#include <cuda/tae/tae_decode_kernels.hpp>
-
 #include <cudf/utilities/error.hpp>
 
+#include <cuda/tae/tae_decode_kernels.hpp>
 #include <cuda_runtime.h>
 
 #include <cstdint>
@@ -72,8 +71,8 @@ void decode_fixed_width(const uint8_t* d_src,
   if (epoch_adjust == 0) {
     // No adjustment — caller already uses cudaMemcpyAsync D2D for this case,
     // but handle it here as fallback.
-    CUDF_CUDA_TRY(cudaMemcpyAsync(d_dst, d_src, n_rows * elem_size,
-                                   cudaMemcpyDeviceToDevice, stream.value()));
+    CUDF_CUDA_TRY(
+      cudaMemcpyAsync(d_dst, d_src, n_rows * elem_size, cudaMemcpyDeviceToDevice, stream.value()));
   } else {
     // Fused copy + epoch adjustment in a single pass (halves memory bandwidth)
     uint32_t row_blocks = (n_rows + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
@@ -85,8 +84,8 @@ void decode_fixed_width(const uint8_t* d_src,
         d_src, reinterpret_cast<int64_t*>(d_dst), n_rows, epoch_adjust);
     } else {
       // Fallback for unusual element sizes with epoch adjustment — shouldn't happen
-      CUDF_CUDA_TRY(cudaMemcpyAsync(d_dst, d_src, n_rows * elem_size,
-                                     cudaMemcpyDeviceToDevice, stream.value()));
+      CUDF_CUDA_TRY(cudaMemcpyAsync(
+        d_dst, d_src, n_rows * elem_size, cudaMemcpyDeviceToDevice, stream.value()));
     }
   }
 }

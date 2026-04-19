@@ -303,16 +303,22 @@ foreach(_target sirius_extension sirius_loadable_extension)
       $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/include>
       $<$<BOOL:${SIRIUS_LEGACY_INCLUDE_DIR}>:$<BUILD_INTERFACE:${SIRIUS_LEGACY_INCLUDE_DIR}>>
       # tae-scanner headers needed by tae_scan_task.cpp for TAEScanBindData
-      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../tae-scanner/include>
-  )
+      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../tae-scanner/include>)
 
   if(SIRIUS_LEGACY_COMPILE_DEFINITIONS)
     target_compile_definitions(${_target}
                                PRIVATE ${SIRIUS_LEGACY_COMPILE_DEFINITIONS})
   endif()
 
-  target_link_libraries(${_target} cudf::cudf rmm::rmm spdlog::spdlog
-                        cuCascade::cucascade yaml-cpp::yaml-cpp lz4 nvcomp)
+  target_link_libraries(
+    ${_target}
+    cudf::cudf
+    rmm::rmm
+    spdlog::spdlog
+    cuCascade::cucascade
+    yaml-cpp::yaml-cpp
+    lz4
+    nvcomp)
 
   add_dependencies(${_target} duckdb_static)
 endforeach()

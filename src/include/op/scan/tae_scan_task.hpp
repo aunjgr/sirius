@@ -51,9 +51,9 @@ namespace sirius::op::scan {
 // TAE Object Partition — work unit for one TAE object file
 //===----------------------------------------------------------------------===//
 struct tae_object_partition {
-  std::string file_path;   ///< Full URL (data_dir + relative path)
-  uint32_t    rows;        ///< Total rows in the object
-  uint32_t    size_bytes;  ///< File size on disk
+  std::string file_path;  ///< Full URL (data_dir + relative path)
+  uint32_t rows;          ///< Total rows in the object
+  uint32_t size_bytes;    ///< File size on disk
 };
 
 //===----------------------------------------------------------------------===//
@@ -74,7 +74,7 @@ class tae_scan_task_global_state : public pipeline::sirius_pipeline_task_global_
    */
   [[nodiscard]] std::optional<tae_object_partition> claim_next_partition()
   {
-    auto total = _partitions.size();
+    auto total          = _partitions.size();
     std::size_t current = _next_partition.load(std::memory_order_relaxed);
     while (true) {
       if (current >= total) return std::nullopt;
@@ -105,7 +105,10 @@ class tae_scan_task_global_state : public pipeline::sirius_pipeline_task_global_
 
   // Filter expression for GPU pushdown
   [[nodiscard]] std::shared_ptr<gpu_expression_translator::translated_expression>
-  get_filter_expression() const { return _translated_filter; }
+  get_filter_expression() const
+  {
+    return _translated_filter;
+  }
 
   [[nodiscard]] std::vector<std::size_t> const& get_post_filter_projection_ids() const
   {
@@ -132,7 +135,7 @@ class tae_scan_task_global_state : public pipeline::sirius_pipeline_task_global_
 
   // Schema info (from TAEScanBindData)
   std::vector<std::string> _all_col_names;
-  std::vector<uint8_t>     _all_col_mo_oids;
+  std::vector<uint8_t> _all_col_mo_oids;
 
   // Filter state
   std::shared_ptr<gpu_expression_translator::translated_expression> _translated_filter;
@@ -144,8 +147,7 @@ class tae_scan_task_global_state : public pipeline::sirius_pipeline_task_global_
 //===----------------------------------------------------------------------===//
 class tae_scan_task_local_state : public pipeline::sirius_pipeline_task_local_state {
  public:
-  tae_scan_task_local_state(tae_scan_task_global_state& g_state,
-                            tae_object_partition partition);
+  tae_scan_task_local_state(tae_scan_task_global_state& g_state, tae_object_partition partition);
 
   [[nodiscard]] tae_object_partition const& get_partition() const { return _partition; }
   [[nodiscard]] std::size_t get_task_consumption_basis() const override

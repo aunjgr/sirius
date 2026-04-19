@@ -142,7 +142,7 @@ sirius_physical_plan_generator::create_plan(duckdb::LogicalGet& op)
       // create a separate filter operator for it
       if (!op.function.supports_pushdown_type(*op.bind_data, column_id)) {
         std::size_t column_id_filter = entry.first;
-        auto batch_idx = local_batch_column_map[column_id_filter];
+        auto batch_idx               = local_batch_column_map[column_id_filter];
         auto column = duckdb::make_uniq<duckdb::BoundReferenceExpression>(type, batch_idx);
         select_list.push_back(entry.second->ToExpression(*column));
         to_remove.insert(entry.first);

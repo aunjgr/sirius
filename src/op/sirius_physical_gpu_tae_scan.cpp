@@ -25,8 +25,7 @@
 namespace sirius {
 namespace op {
 
-sirius_physical_gpu_tae_scan::sirius_physical_gpu_tae_scan(
-  sirius_physical_table_scan* table_scan)
+sirius_physical_gpu_tae_scan::sirius_physical_gpu_tae_scan(sirius_physical_table_scan* table_scan)
   : sirius_physical_gpu_tae_scan(
       table_scan->types,
       table_scan->function,

@@ -44,8 +44,8 @@ namespace sirius::op::scan {
 // CPU LZ4 decompression (metadata only)
 //===----------------------------------------------------------------------===//
 static std::vector<uint8_t> decompress_lz4_cpu(const uint8_t* src,
-                                                uint32_t src_len,
-                                                uint32_t origin_size)
+                                               uint32_t src_len,
+                                               uint32_t origin_size)
 {
   std::vector<uint8_t> dst(origin_size);
   int decoded = LZ4_decompress_safe(reinterpret_cast<const char*>(src),
@@ -79,10 +79,10 @@ bool tae_scan_task::detect_crc_format(duckdb::FileSystem& fs, duckdb::FileHandle
 }
 
 std::vector<uint8_t> tae_scan_task::read_bytes(duckdb::FileSystem& fs,
-                                                duckdb::FileHandle& handle,
-                                                uint64_t logical_offset,
-                                                uint64_t length,
-                                                bool crc_format)
+                                               duckdb::FileHandle& handle,
+                                               uint64_t logical_offset,
+                                               uint64_t length,
+                                               bool crc_format)
 {
   if (!crc_format) {
     std::vector<uint8_t> buf(length);
@@ -97,9 +97,7 @@ std::vector<uint8_t> tae_scan_task::read_bytes(duckdb::FileSystem& fs,
   uint64_t phys_end    = (last_block + 1) * tae::CRC_BLOCK_SIZE;
 
   auto file_size = handle.GetFileSize();
-  if (phys_end > static_cast<uint64_t>(file_size)) {
-    phys_end = static_cast<uint64_t>(file_size);
-  }
+  if (phys_end > static_cast<uint64_t>(file_size)) { phys_end = static_cast<uint64_t>(file_size); }
 
   uint64_t raw_size = phys_end - phys_start;
   std::vector<uint8_t> raw(raw_size);
@@ -128,7 +126,7 @@ std::vector<uint8_t> tae_scan_task::read_bytes(duckdb::FileSystem& fs,
     throw std::runtime_error("CRC read: offset+length exceeds stripped range");
   }
   return std::vector<uint8_t>(stripped.begin() + local_offset,
-                               stripped.begin() + local_offset + length);
+                              stripped.begin() + local_offset + length);
 }
 
 //===----------------------------------------------------------------------===//
@@ -162,12 +160,13 @@ tae_scan_task_global_state::tae_scan_task_global_state(
   }
 
   SIRIUS_LOG_INFO("[tae_scan_task_global_state] {} object partitions, {} total rows",
-                  _partitions.size(), bind_data.total_rows);
+                  _partitions.size(),
+                  bind_data.total_rows);
 
   // Propagate filter expression from the scan operator
   if (scan_op->translated_filter.has_value()) {
-    _translated_filter =
-      std::make_shared<gpu_expression_translator::translated_expression>(std::move(*scan_op->translated_filter));
+    _translated_filter = std::make_shared<gpu_expression_translator::translated_expression>(
+      std::move(*scan_op->translated_filter));
   }
 
   // Build post-filter projection IDs (same logic as parquet).
@@ -188,9 +187,8 @@ tae_scan_task_global_state::tae_scan_task_global_state(
 // tae_scan_task_local_state
 //===----------------------------------------------------------------------===//
 
-tae_scan_task_local_state::tae_scan_task_local_state(
-  tae_scan_task_global_state& /*g_state*/,
-  tae_object_partition partition)
+tae_scan_task_local_state::tae_scan_task_local_state(tae_scan_task_global_state& /*g_state*/,
+                                                     tae_object_partition partition)
   : _partition(std::move(partition))
 {
 }
@@ -220,15 +218,17 @@ std::size_t tae_scan_task::get_estimated_reservation_size() const
 
 std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_view /*stream*/)
 {
-  auto& g_state = _global_state->cast<tae_scan_task_global_state>();
-  auto& l_state = _local_state->cast<tae_scan_task_local_state>();
+  auto& g_state   = _global_state->cast<tae_scan_task_global_state>();
+  auto& l_state   = _local_state->cast<tae_scan_task_local_state>();
   auto& partition = l_state.get_partition();
 
   SIRIUS_LOG_INFO("[tae_scan_task] scanning object: {} ({} rows, {} bytes)",
-                  partition.file_path, partition.rows, partition.size_bytes);
+                  partition.file_path,
+                  partition.rows,
+                  partition.size_bytes);
 
   // 1. Open file via DuckDB FileSystem (handles local files and HTTP URLs)
-  auto& fs = duckdb::FileSystem::GetFileSystem(g_state.get_client_context());
+  auto& fs    = duckdb::FileSystem::GetFileSystem(g_state.get_client_context());
   auto handle = fs.OpenFile(partition.file_path, duckdb::FileOpenFlags::FILE_FLAGS_READ);
 
   // 2. Detect CRC format
@@ -262,8 +262,8 @@ std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_
   //    which maps to a seqnum in the TAE block's columns.
   //    We also build a seqnum → column_ids_position map so the converter
   //    produces columns in column_ids order (matching batch_column_map).
-  auto& col_ids = g_state.get_operator().column_ids;
-  auto& proj_ids = g_state.get_operator().projection_ids;
+  auto& col_ids        = g_state.get_operator().column_ids;
+  auto& proj_ids       = g_state.get_operator().projection_ids;
   auto& returned_types = g_state.get_operator().returned_types;
 
   std::vector<uint16_t> projected_seqnums;
@@ -295,7 +295,7 @@ std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_
     uint64_t offset;
     uint32_t compressed_length;
     uint32_t origin_size;
-    uint8_t  alg;
+    uint8_t alg;
     uint16_t seqnum;
     uint16_t col_ids_position;  // position in column_ids (for converter ordering)
     uint32_t block_idx;
@@ -314,8 +314,14 @@ std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_
       if (seq >= blk.columns.size()) continue;
       auto& col = blk.columns[seq];
       auto& ext = col.location;
-      reads.push_back({ext.offset, ext.length, ext.origin_size, ext.alg,
-                        seq, projected_col_ids_positions[si], b, blk.rows});
+      reads.push_back({ext.offset,
+                       ext.length,
+                       ext.origin_size,
+                       ext.alg,
+                       seq,
+                       projected_col_ids_positions[si],
+                       b,
+                       blk.rows});
     }
   }
 
@@ -325,8 +331,9 @@ std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_
   }
 
   // 6. Sort by file offset for sequential I/O
-  std::sort(reads.begin(), reads.end(),
-            [](const ReadChunk& a, const ReadChunk& b) { return a.offset < b.offset; });
+  std::sort(reads.begin(), reads.end(), [](const ReadChunk& a, const ReadChunk& b) {
+    return a.offset < b.offset;
+  });
 
   // 7. Compute total compressed bytes
   std::size_t total_compressed   = 0;
@@ -349,12 +356,10 @@ std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_
     std::memcpy(host_data.data() + write_offset, compressed.data(), compressed.size());
 
     // Find the MO type for this column
-    auto& mo_oids = g_state.get_column_mo_oids();
+    auto& mo_oids           = g_state.get_column_mo_oids();
     tae::MOTypeOid type_oid = tae::MO_T_any;
     int32_t width = 0, scale = 0;
-    if (r.seqnum < mo_oids.size()) {
-      type_oid = static_cast<tae::MOTypeOid>(mo_oids[r.seqnum]);
-    }
+    if (r.seqnum < mo_oids.size()) { type_oid = static_cast<tae::MOTypeOid>(mo_oids[r.seqnum]); }
 
     // Get decimal width/scale from DuckDB returned_types (which has proper DECIMAL info)
     if (r.seqnum < returned_types.size() &&
@@ -365,17 +370,18 @@ std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_
 
     // Find null_cnt from metadata
     uint32_t null_cnt = 0;
-    if (r.block_idx < obj_meta.block_count && r.seqnum < obj_meta.blocks[r.block_idx].columns.size()) {
+    if (r.block_idx < obj_meta.block_count &&
+        r.seqnum < obj_meta.blocks[r.block_idx].columns.size()) {
       null_cnt = obj_meta.blocks[r.block_idx].columns[r.seqnum].null_cnt;
     }
 
     host_tae_representation::column_chunk_info chunk;
-    chunk.column_idx    = r.col_ids_position;  // column_ids position for correct converter ordering
-    chunk.type_oid      = type_oid;
-    chunk.width         = width;
-    chunk.scale         = scale;
-    chunk.extent        = tae::Extent{r.alg, static_cast<uint32_t>(r.offset),
-                                       r.compressed_length, r.origin_size};
+    chunk.column_idx = r.col_ids_position;  // column_ids position for correct converter ordering
+    chunk.type_oid   = type_oid;
+    chunk.width      = width;
+    chunk.scale      = scale;
+    chunk.extent =
+      tae::Extent{r.alg, static_cast<uint32_t>(r.offset), r.compressed_length, r.origin_size};
     chunk.null_cnt      = null_cnt;
     chunk.row_count     = r.block_rows;
     chunk.pinned_offset = write_offset;
@@ -388,28 +394,27 @@ std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_
   // 9. Build host_tae_representation
   auto* host_space = g_state.get_host_memory_space();
 
-  auto repr = std::make_unique<host_tae_representation>(
-    host_space,
-    std::move(host_data),
-    std::move(chunks),
-    total_rows,
-    total_compressed,
-    total_uncompressed,
-    g_state.get_filter_expression(),
-    g_state.get_post_filter_projection_ids());
+  auto repr = std::make_unique<host_tae_representation>(host_space,
+                                                        std::move(host_data),
+                                                        std::move(chunks),
+                                                        total_rows,
+                                                        total_compressed,
+                                                        total_uncompressed,
+                                                        g_state.get_filter_expression(),
+                                                        g_state.get_post_filter_projection_ids());
 
-  auto batch = std::make_shared<cucascade::data_batch>(
-    get_next_batch_id(), std::move(repr));
+  auto batch = std::make_shared<cucascade::data_batch>(get_next_batch_id(), std::move(repr));
 
   SIRIUS_LOG_INFO("[tae_scan_task] produced batch: {} rows, {} compressed, {} uncompressed",
-                  total_rows, total_compressed, total_uncompressed);
+                  total_rows,
+                  total_compressed,
+                  total_uncompressed);
 
   return std::make_unique<op::pipelineable_operator_data>(
     std::vector<std::shared_ptr<cucascade::data_batch>>{std::move(batch)});
 }
 
-void tae_scan_task::publish_output(op::operator_data& output_data,
-                                    rmm::cuda_stream_view /*stream*/)
+void tae_scan_task::publish_output(op::operator_data& output_data, rmm::cuda_stream_view /*stream*/)
 {
   auto& pipelineable_output = dynamic_cast<op::pipelineable_operator_data&>(output_data);
   for (auto& batch : pipelineable_output.release_data_batches()) {

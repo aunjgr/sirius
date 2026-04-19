@@ -16,6 +16,7 @@
 
 // sirius
 #include <cuda/tae/tae_decode_kernels.hpp>
+
 #include <data/host_tae_representation.hpp>
 #include <data/host_tae_representation_converters.hpp>
 #include <log/logging.hpp>
@@ -72,27 +73,27 @@ namespace detail {
 static cudf::data_type mo_oid_to_cudf_type(tae::MOTypeOid oid, int32_t scale = 0)
 {
   switch (oid) {
-    case tae::MO_T_bool:    return cudf::data_type{cudf::type_id::BOOL8};
-    case tae::MO_T_int8:    return cudf::data_type{cudf::type_id::INT8};
-    case tae::MO_T_int16:   return cudf::data_type{cudf::type_id::INT16};
-    case tae::MO_T_int32:   return cudf::data_type{cudf::type_id::INT32};
-    case tae::MO_T_int64:   return cudf::data_type{cudf::type_id::INT64};
-    case tae::MO_T_uint8:   return cudf::data_type{cudf::type_id::UINT8};
-    case tae::MO_T_uint16:  return cudf::data_type{cudf::type_id::UINT16};
-    case tae::MO_T_uint32:  return cudf::data_type{cudf::type_id::UINT32};
-    case tae::MO_T_uint64:  return cudf::data_type{cudf::type_id::UINT64};
+    case tae::MO_T_bool: return cudf::data_type{cudf::type_id::BOOL8};
+    case tae::MO_T_int8: return cudf::data_type{cudf::type_id::INT8};
+    case tae::MO_T_int16: return cudf::data_type{cudf::type_id::INT16};
+    case tae::MO_T_int32: return cudf::data_type{cudf::type_id::INT32};
+    case tae::MO_T_int64: return cudf::data_type{cudf::type_id::INT64};
+    case tae::MO_T_uint8: return cudf::data_type{cudf::type_id::UINT8};
+    case tae::MO_T_uint16: return cudf::data_type{cudf::type_id::UINT16};
+    case tae::MO_T_uint32: return cudf::data_type{cudf::type_id::UINT32};
+    case tae::MO_T_uint64: return cudf::data_type{cudf::type_id::UINT64};
     case tae::MO_T_float32: return cudf::data_type{cudf::type_id::FLOAT32};
     case tae::MO_T_float64: return cudf::data_type{cudf::type_id::FLOAT64};
-    case tae::MO_T_date:    return cudf::data_type{cudf::type_id::TIMESTAMP_DAYS};
+    case tae::MO_T_date: return cudf::data_type{cudf::type_id::TIMESTAMP_DAYS};
     case tae::MO_T_datetime: return cudf::data_type{cudf::type_id::TIMESTAMP_MICROSECONDS};
     case tae::MO_T_char:
     case tae::MO_T_varchar:
     case tae::MO_T_text:
     case tae::MO_T_blob:
-    case tae::MO_T_json:    return cudf::data_type{cudf::type_id::STRING};
-    case tae::MO_T_decimal64:  return cudf::data_type{cudf::type_id::DECIMAL64, -scale};
+    case tae::MO_T_json: return cudf::data_type{cudf::type_id::STRING};
+    case tae::MO_T_decimal64: return cudf::data_type{cudf::type_id::DECIMAL64, -scale};
     case tae::MO_T_decimal128: return cudf::data_type{cudf::type_id::DECIMAL128, -scale};
-    default:                return cudf::data_type{cudf::type_id::INT64};
+    default: return cudf::data_type{cudf::type_id::INT64};
   }
 }
 
@@ -102,13 +103,13 @@ static uint32_t mo_oid_fixed_width(tae::MOTypeOid oid)
   switch (oid) {
     case tae::MO_T_bool:
     case tae::MO_T_int8:
-    case tae::MO_T_uint8:    return 1;
+    case tae::MO_T_uint8: return 1;
     case tae::MO_T_int16:
-    case tae::MO_T_uint16:   return 2;
+    case tae::MO_T_uint16: return 2;
     case tae::MO_T_int32:
     case tae::MO_T_uint32:
     case tae::MO_T_float32:
-    case tae::MO_T_date:     return 4;
+    case tae::MO_T_date: return 4;
     case tae::MO_T_int64:
     case tae::MO_T_uint64:
     case tae::MO_T_float64:
@@ -145,7 +146,7 @@ static bool is_timestamp_type(tae::MOTypeOid oid) { return oid == tae::MO_T_date
 // For fixed-width columns: dataLen = row_count * elem_size, areaLen = 0
 // For varchar columns:     dataLen = row_count * 24 (varlena structs), area = string payloads
 // ---------------------------------------------------------------------------
-constexpr uint32_t VEC_HEADER_SIZE = 4 + 1 + 16 + 4 + 4;  // 29 bytes to data start
+constexpr uint32_t VEC_HEADER_SIZE     = 4 + 1 + 16 + 4 + 4;  // 29 bytes to data start
 constexpr uint32_t VARLENA_STRUCT_SIZE = 24;
 
 // ---------------------------------------------------------------------------
@@ -156,15 +157,14 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
   cucascade::memory::memory_space const* target_memory_space,
   rmm::cuda_stream_view stream)
 {
-  auto& host_src = source.cast<host_tae_representation>();
-  auto const& chunks = host_src.get_column_chunks();
+  auto& host_src                         = source.cast<host_tae_representation>();
+  auto const& chunks                     = host_src.get_column_chunks();
   auto const& post_filter_projection_ids = host_src.get_post_filter_projection_ids();
 
   if (chunks.empty()) {
     auto empty_table = std::make_unique<cudf::table>();
     return std::make_unique<cucascade::gpu_table_representation>(
-      std::move(empty_table),
-      *const_cast<cucascade::memory::memory_space*>(target_memory_space));
+      std::move(empty_table), *const_cast<cucascade::memory::memory_space*>(target_memory_space));
   }
 
   rmm::device_async_resource_ref mr_ref(target_memory_space->get_default_allocator());
@@ -185,7 +185,7 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
   }
 
   // 3. Separate compressed chunks and uncompressed chunks
-  std::vector<std::size_t> compressed_indices;     // indices into chunks[]
+  std::vector<std::size_t> compressed_indices;  // indices into chunks[]
   std::vector<std::size_t> uncompressed_indices;
   for (std::size_t i = 0; i < chunks.size(); i++) {
     if (chunks[i].extent.is_compressed()) {
@@ -199,8 +199,11 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
   //    This replaces per-chunk H→D copies, reducing driver overhead and
   //    enabling full PCIe bandwidth utilization.
   rmm::device_buffer d_mirror(linear_host.size(), stream, mr_ref);
-  CUDF_CUDA_TRY(cudaMemcpyAsync(d_mirror.data(), linear_host.data(),
-                                 linear_host.size(), cudaMemcpyHostToDevice, stream.value()));
+  CUDF_CUDA_TRY(cudaMemcpyAsync(d_mirror.data(),
+                                linear_host.data(),
+                                linear_host.size(),
+                                cudaMemcpyHostToDevice,
+                                stream.value()));
 
   // 5. Allocate decompression output buffers
   std::size_t total_compressed = 0;
@@ -231,45 +234,55 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
     // Build pointer and size arrays on device
     std::vector<void const*> h_comp_ptrs(num_chunks_to_decompress);
     std::vector<std::size_t> h_comp_sizes(num_chunks_to_decompress);
-    std::vector<void*>       h_decomp_ptrs(num_chunks_to_decompress);
+    std::vector<void*> h_decomp_ptrs(num_chunks_to_decompress);
     std::vector<std::size_t> h_decomp_buf_sizes(num_chunks_to_decompress);
 
     std::size_t max_uncomp_size = 0;
 
     for (std::size_t ci = 0; ci < num_chunks_to_decompress; ci++) {
-      auto& chunk = chunks[compressed_indices[ci]];
-      h_comp_ptrs[ci]  = static_cast<uint8_t*>(d_mirror.data()) + chunk.pinned_offset;
-      h_comp_sizes[ci] = chunk.pinned_length;
-      h_decomp_ptrs[ci]      = static_cast<uint8_t*>(d_decompressed.data()) + d_decompressed_offsets[ci];
+      auto& chunk       = chunks[compressed_indices[ci]];
+      h_comp_ptrs[ci]   = static_cast<uint8_t*>(d_mirror.data()) + chunk.pinned_offset;
+      h_comp_sizes[ci]  = chunk.pinned_length;
+      h_decomp_ptrs[ci] = static_cast<uint8_t*>(d_decompressed.data()) + d_decompressed_offsets[ci];
       h_decomp_buf_sizes[ci] = chunk.extent.origin_size;
-      max_uncomp_size = std::max(max_uncomp_size, static_cast<std::size_t>(chunk.extent.origin_size));
+      max_uncomp_size =
+        std::max(max_uncomp_size, static_cast<std::size_t>(chunk.extent.origin_size));
     }
 
     // Device arrays
     rmm::device_uvector<void const*> d_comp_ptrs(num_chunks_to_decompress, stream, mr_ref);
     rmm::device_uvector<std::size_t> d_comp_sizes(num_chunks_to_decompress, stream, mr_ref);
-    rmm::device_uvector<void*>       d_decomp_ptrs(num_chunks_to_decompress, stream, mr_ref);
+    rmm::device_uvector<void*> d_decomp_ptrs(num_chunks_to_decompress, stream, mr_ref);
     rmm::device_uvector<std::size_t> d_decomp_buf_sizes(num_chunks_to_decompress, stream, mr_ref);
-    rmm::device_uvector<std::size_t> d_decomp_actual_sizes(num_chunks_to_decompress, stream, mr_ref);
+    rmm::device_uvector<std::size_t> d_decomp_actual_sizes(
+      num_chunks_to_decompress, stream, mr_ref);
     rmm::device_uvector<nvcompStatus_t> d_statuses(num_chunks_to_decompress, stream, mr_ref);
 
-    CUDF_CUDA_TRY(cudaMemcpyAsync(d_comp_ptrs.data(), h_comp_ptrs.data(),
-                              num_chunks_to_decompress * sizeof(void*),
-                              cudaMemcpyHostToDevice, stream.value()));
-    CUDF_CUDA_TRY(cudaMemcpyAsync(d_comp_sizes.data(), h_comp_sizes.data(),
-                              num_chunks_to_decompress * sizeof(std::size_t),
-                              cudaMemcpyHostToDevice, stream.value()));
-    CUDF_CUDA_TRY(cudaMemcpyAsync(d_decomp_ptrs.data(), h_decomp_ptrs.data(),
-                              num_chunks_to_decompress * sizeof(void*),
-                              cudaMemcpyHostToDevice, stream.value()));
-    CUDF_CUDA_TRY(cudaMemcpyAsync(d_decomp_buf_sizes.data(), h_decomp_buf_sizes.data(),
-                              num_chunks_to_decompress * sizeof(std::size_t),
-                              cudaMemcpyHostToDevice, stream.value()));
+    CUDF_CUDA_TRY(cudaMemcpyAsync(d_comp_ptrs.data(),
+                                  h_comp_ptrs.data(),
+                                  num_chunks_to_decompress * sizeof(void*),
+                                  cudaMemcpyHostToDevice,
+                                  stream.value()));
+    CUDF_CUDA_TRY(cudaMemcpyAsync(d_comp_sizes.data(),
+                                  h_comp_sizes.data(),
+                                  num_chunks_to_decompress * sizeof(std::size_t),
+                                  cudaMemcpyHostToDevice,
+                                  stream.value()));
+    CUDF_CUDA_TRY(cudaMemcpyAsync(d_decomp_ptrs.data(),
+                                  h_decomp_ptrs.data(),
+                                  num_chunks_to_decompress * sizeof(void*),
+                                  cudaMemcpyHostToDevice,
+                                  stream.value()));
+    CUDF_CUDA_TRY(cudaMemcpyAsync(d_decomp_buf_sizes.data(),
+                                  h_decomp_buf_sizes.data(),
+                                  num_chunks_to_decompress * sizeof(std::size_t),
+                                  cudaMemcpyHostToDevice,
+                                  stream.value()));
 
     // Get temp size
     std::size_t temp_bytes = 0;
-    auto opts = nvcompBatchedLZ4DecompressDefaultOpts;
-    auto status = nvcompBatchedLZ4DecompressGetTempSizeAsync(
+    auto opts              = nvcompBatchedLZ4DecompressDefaultOpts;
+    auto status            = nvcompBatchedLZ4DecompressGetTempSizeAsync(
       num_chunks_to_decompress, max_uncomp_size, opts, &temp_bytes, total_decompressed);
     if (status != nvcompSuccess) {
       throw std::runtime_error("nvcompBatchedLZ4DecompressGetTempSizeAsync failed: " +
@@ -279,22 +292,20 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
     rmm::device_buffer d_temp(temp_bytes, stream, mr_ref);
 
     // Decompress
-    status = nvcompBatchedLZ4DecompressAsync(
-      d_comp_ptrs.data(),
-      d_comp_sizes.data(),
-      d_decomp_buf_sizes.data(),
-      d_decomp_actual_sizes.data(),
-      num_chunks_to_decompress,
-      d_temp.data(),
-      temp_bytes,
-      d_decomp_ptrs.data(),
-      opts,
-      d_statuses.data(),
-      stream.value());
+    status = nvcompBatchedLZ4DecompressAsync(d_comp_ptrs.data(),
+                                             d_comp_sizes.data(),
+                                             d_decomp_buf_sizes.data(),
+                                             d_decomp_actual_sizes.data(),
+                                             num_chunks_to_decompress,
+                                             d_temp.data(),
+                                             temp_bytes,
+                                             d_decomp_ptrs.data(),
+                                             opts,
+                                             d_statuses.data(),
+                                             stream.value());
 
     if (status != nvcompSuccess) {
-      throw std::runtime_error("nvcompBatchedLZ4DecompressAsync failed: " +
-                               std::to_string(status));
+      throw std::runtime_error("nvcompBatchedLZ4DecompressAsync failed: " + std::to_string(status));
     }
   }
 
@@ -319,8 +330,8 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
 
   for (auto& [col_idx, chunk_refs] : col_chunks) {
     auto& first_chunk = chunks[chunk_refs[0].chunk_index];
-    auto type_oid = first_chunk.type_oid;
-    auto cudf_type = mo_oid_to_cudf_type(type_oid, first_chunk.scale);
+    auto type_oid     = first_chunk.type_oid;
+    auto cudf_type    = mo_oid_to_cudf_type(type_oid, first_chunk.scale);
 
     // Total rows for this column across all blocks
     std::size_t col_total_rows = 0;
@@ -333,8 +344,8 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
       // MO vector layout: [header 29B][varlena_structs row_count*24B][areaLen 4B][area...][nsp...]
 
       struct block_info {
-        uint8_t* d_data;        // pointer to varlena struct array
-        uint8_t* d_area;        // pointer to area section
+        uint8_t* d_data;  // pointer to varlena struct array
+        uint8_t* d_area;  // pointer to area section
         std::size_t d_size;
         uint32_t rows;
         uint32_t actual_data_len;  // actual dataLen from vector header
@@ -347,10 +358,10 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
       std::vector<block_info> blocks;
       blocks.reserve(chunk_refs.size());
       for (std::size_t i = 0; i < chunk_refs.size(); i++) {
-        auto& cr = chunk_refs[i];
-        auto& chunk = chunks[cr.chunk_index];
-        auto* d_ptr = chunk_device_ptrs[cr.chunk_index];
-        auto d_size = get_chunk_decompressed_size(cr.chunk_index);
+        auto& cr                 = chunk_refs[i];
+        auto& chunk              = chunks[cr.chunk_index];
+        auto* d_ptr              = chunk_device_ptrs[cr.chunk_index];
+        auto d_size              = get_chunk_decompressed_size(cr.chunk_index);
         uint32_t actual_data_len = chunk.row_count * VARLENA_STRUCT_SIZE;
 
         if (VEC_HEADER_SIZE + actual_data_len > d_size) {
@@ -358,19 +369,46 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
         }
 
         auto* d_varlena = d_ptr + VEC_HEADER_SIZE;
-        auto* d_area = d_ptr + VEC_HEADER_SIZE + actual_data_len + 4;
-        blocks.push_back({d_varlena, d_area, d_size, chunk.row_count, actual_data_len, 0, cr.chunk_index});
+        auto* d_area    = d_ptr + VEC_HEADER_SIZE + actual_data_len + 4;
+        blocks.push_back(
+          {d_varlena, d_area, d_size, chunk.row_count, actual_data_len, 0, cr.chunk_index});
       }
 
-      // === Single sync: launch sum_lengths + area_len reads, then batch D→H ===
-      std::vector<unsigned long long> h_block_totals(blocks.size());
+      // === Phase 1: compute offsets (CUB prefix-sum) + read totals from offsets[n_rows] ===
+      auto offsets_buf = rmm::device_buffer((col_total_rows + 1) * sizeof(int32_t), stream, mr_ref);
+
+      // CUB temp size depends only on row count; query once with max.
+      uint32_t max_block_rows = 0;
+      for (auto& bi : blocks)
+        max_block_rows = std::max(max_block_rows, bi.rows);
+      std::size_t max_temp_bytes = 0;
+      cuda::tae::decode_varchar_offsets(
+        nullptr, nullptr, nullptr, nullptr, max_temp_bytes, max_block_rows, stream);
+      rmm::device_buffer d_temp(max_temp_bytes, stream, mr_ref);
+
+      // Interleave offsets computation and D->H reads of totals.
+      // Each block's CUB ExclusiveSum writes offsets[n_rows] = total chars.
+      // Reading it via D->H *before* the next block's kernel overwrites that slot
+      // is safe because operations on the same stream are strictly ordered.
+      std::vector<int32_t> h_block_totals(blocks.size());
       {
-        rmm::device_uvector<unsigned long long> d_totals(blocks.size(), stream, mr_ref);
-        CUDF_CUDA_TRY(cudaMemsetAsync(d_totals.data(), 0,
-                                       blocks.size() * sizeof(unsigned long long), stream.value()));
+        std::size_t row_offset = 0;
         for (std::size_t i = 0; i < blocks.size(); i++) {
-          cuda::tae::compute_varchar_total_chars_async(blocks[i].d_data, blocks[i].d_area, blocks[i].rows,
-                                 d_totals.data() + i, stream);
+          auto& bi            = blocks[i];
+          auto* d_offsets_out = static_cast<int32_t*>(offsets_buf.data()) + row_offset;
+
+          std::size_t temp_bytes = max_temp_bytes;
+          cuda::tae::decode_varchar_offsets(
+            bi.d_data, bi.d_area, d_offsets_out, d_temp.data(), temp_bytes, bi.rows, stream);
+
+          // offsets[n_rows] = total chars for this block
+          CUDF_CUDA_TRY(cudaMemcpyAsync(&h_block_totals[i],
+                                        d_offsets_out + bi.rows,
+                                        sizeof(int32_t),
+                                        cudaMemcpyDeviceToHost,
+                                        stream.value()));
+
+          row_offset += bi.rows;
         }
         // Area_len reads for blocks with nulls (batched before single sync)
         for (std::size_t i = 0; i < blocks.size(); i++) {
@@ -378,14 +416,12 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
           if (chunk.null_cnt > 0) {
             auto* d_ptr = chunk_device_ptrs[blocks[i].chunk_index];
             CUDF_CUDA_TRY(cudaMemcpyAsync(&blocks[i].area_len,
-                                           d_ptr + VEC_HEADER_SIZE + blocks[i].actual_data_len,
-                                           sizeof(uint32_t), cudaMemcpyDeviceToHost, stream.value()));
+                                          d_ptr + VEC_HEADER_SIZE + blocks[i].actual_data_len,
+                                          sizeof(uint32_t),
+                                          cudaMemcpyDeviceToHost,
+                                          stream.value()));
           }
         }
-        // D→H of totals (async, waits for sum_lengths on same stream)
-        CUDF_CUDA_TRY(cudaMemcpyAsync(h_block_totals.data(), d_totals.data(),
-                                       blocks.size() * sizeof(unsigned long long),
-                                       cudaMemcpyDeviceToHost, stream.value()));
         stream.synchronize();
       }
 
@@ -397,45 +433,40 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
         grand_total_chars += h_block_totals[i];
       }
 
-      // Allocate output: offsets (int32) and chars (uint8)
-      auto offsets_buf = rmm::device_buffer(
-        (col_total_rows + 1) * sizeof(int32_t), stream, mr_ref);
+      // Allocate chars buffer (now that we know grand total)
       auto chars_buf = rmm::device_buffer(grand_total_chars, stream, mr_ref);
 
-      // === Phase 3: Decode all blocks ===
-      // CUB temp size depends only on row count; query once with max.
-      uint32_t max_block_rows = 0;
-      for (auto& bi : blocks) max_block_rows = std::max(max_block_rows, bi.rows);
-      std::size_t max_temp_bytes = 0;
-      cuda::tae::decode_varchar(nullptr, nullptr, nullptr, nullptr, nullptr, max_temp_bytes, max_block_rows, stream);
-      rmm::device_buffer d_temp(max_temp_bytes, stream, mr_ref);
+      // === Phase 2: scatter chars using precomputed offsets ===
+      {
+        std::size_t row_offset = 0;
+        for (std::size_t i = 0; i < blocks.size(); i++) {
+          auto& bi            = blocks[i];
+          auto* d_offsets_out = static_cast<int32_t*>(offsets_buf.data()) + row_offset;
+          auto* d_chars_out   = static_cast<uint8_t*>(chars_buf.data()) + block_char_offsets[i];
 
-      std::size_t row_offset = 0;
-      for (std::size_t i = 0; i < blocks.size(); i++) {
-        auto& bi = blocks[i];
-        auto* d_offsets_out = static_cast<int32_t*>(offsets_buf.data()) + row_offset;
-        auto* d_chars_out = static_cast<uint8_t*>(chars_buf.data()) + block_char_offsets[i];
+          cuda::tae::decode_varchar_scatter(
+            bi.d_data, bi.d_area, d_offsets_out, d_chars_out, bi.rows, stream);
 
-        std::size_t temp_bytes = max_temp_bytes;
-        cuda::tae::decode_varchar(
-          bi.d_data, bi.d_area, d_offsets_out, d_chars_out, d_temp.data(), temp_bytes, bi.rows, stream);
-
-        // Adjust offsets to be globally monotonic by adding cumulative char_offset
-        if (block_char_offsets[i] > 0) {
-          cuda::tae::adjust_offsets(d_offsets_out, static_cast<int32_t>(block_char_offsets[i]),
-                                    bi.rows + 1, stream);
+          // Adjust offsets to be globally monotonic by adding cumulative char_offset.
+          // Use count = rows (not rows+1) to avoid corrupting the boundary element
+          // that the next block's scatter reads as its local first offset (0).
+          // The last block uses rows+1 to also adjust the final offset element.
+          if (block_char_offsets[i] > 0) {
+            uint32_t adj_count = (i + 1 == blocks.size()) ? bi.rows + 1 : bi.rows;
+            cuda::tae::adjust_offsets(
+              d_offsets_out, static_cast<int32_t>(block_char_offsets[i]), adj_count, stream);
+          }
+          row_offset += bi.rows;
         }
-
-        row_offset += bi.rows;
       }
 
       // Build cuDF string column from offsets + chars
-      auto offsets_col = std::make_unique<cudf::column>(
-        cudf::data_type{cudf::type_id::INT32},
-        static_cast<cudf::size_type>(col_total_rows + 1),
-        std::move(offsets_buf),
-        rmm::device_buffer{},
-        0);
+      auto offsets_col =
+        std::make_unique<cudf::column>(cudf::data_type{cudf::type_id::INT32},
+                                       static_cast<cudf::size_type>(col_total_rows + 1),
+                                       std::move(offsets_buf),
+                                       rmm::device_buffer{},
+                                       0);
 
       // Build null mask
       uint32_t total_nulls = 0;
@@ -445,28 +476,31 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
 
       rmm::device_buffer null_mask;
       if (total_nulls > 0) {
-        null_mask = cudf::create_null_mask(col_total_rows, cudf::mask_state::ALL_VALID, stream, mr_ref);
+        null_mask =
+          cudf::create_null_mask(col_total_rows, cudf::mask_state::ALL_VALID, stream, mr_ref);
         std::size_t bitmask_row_offset = 0;
         for (auto& bi : blocks) {
           auto& chunk = chunks[bi.chunk_index];
           if (chunk.null_cnt > 0) {
             auto* d_src_blk = chunk_device_ptrs[bi.chunk_index];
-            uint32_t nsp_bitmap_offset = VEC_HEADER_SIZE + bi.actual_data_len + 4 + bi.area_len + 4 + 24;
+            uint32_t nsp_bitmap_offset =
+              VEC_HEADER_SIZE + bi.actual_data_len + 4 + bi.area_len + 4 + 24;
             auto* d_validity = static_cast<uint32_t*>(null_mask.data());
             cuda::tae::invert_null_mask(d_src_blk + nsp_bitmap_offset,
                                         d_validity + (bitmask_row_offset / 32),
-                                        bi.rows, stream);
+                                        bi.rows,
+                                        stream);
           }
           bitmask_row_offset += bi.rows;
         }
       }
 
-      auto str_col = cudf::make_strings_column(
-        static_cast<cudf::size_type>(col_total_rows),
-        std::move(offsets_col),
-        std::move(chars_buf),
-        total_nulls > 0 ? static_cast<cudf::size_type>(total_nulls) : 0,
-        total_nulls > 0 ? std::move(null_mask) : rmm::device_buffer{});
+      auto str_col =
+        cudf::make_strings_column(static_cast<cudf::size_type>(col_total_rows),
+                                  std::move(offsets_col),
+                                  std::move(chars_buf),
+                                  total_nulls > 0 ? static_cast<cudf::size_type>(total_nulls) : 0,
+                                  total_nulls > 0 ? std::move(null_mask) : rmm::device_buffer{});
 
       columns.push_back(std::move(str_col));
     } else {
@@ -476,8 +510,10 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
 
       // Compute epoch adjustment for temporal types
       int64_t epoch_adjust = 0;
-      if (is_date_type(type_oid)) epoch_adjust = tae::MO_UNIX_EPOCH_DAYS;
-      else if (is_timestamp_type(type_oid)) epoch_adjust = tae::MO_UNIX_EPOCH_USEC;
+      if (is_date_type(type_oid))
+        epoch_adjust = tae::MO_UNIX_EPOCH_DAYS;
+      else if (is_timestamp_type(type_oid))
+        epoch_adjust = tae::MO_UNIX_EPOCH_USEC;
 
       // Allocate output column data
       auto data_buf = rmm::device_buffer(col_total_rows * elem_size, stream, mr_ref);
@@ -485,15 +521,15 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
       // Decode each block: pass pointer to data section (past vector header)
       std::size_t row_offset = 0;
       for (auto& cr : chunk_refs) {
-        auto& chunk = chunks[cr.chunk_index];
-        auto* d_src = chunk_device_ptrs[cr.chunk_index];
+        auto& chunk  = chunks[cr.chunk_index];
+        auto* d_src  = chunk_device_ptrs[cr.chunk_index];
         auto* d_data = d_src + VEC_HEADER_SIZE;  // skip IOEntry + vec header
-        auto* d_dst = static_cast<uint8_t*>(data_buf.data()) + row_offset * elem_size;
+        auto* d_dst  = static_cast<uint8_t*>(data_buf.data()) + row_offset * elem_size;
 
         if (epoch_adjust == 0) {
           // Direct D2D copy — avoids kernel launch overhead for simple memcpy
-          CUDF_CUDA_TRY(cudaMemcpyAsync(d_dst, d_data, chunk.row_count * elem_size,
-                                        cudaMemcpyDeviceToDevice, stream.value()));
+          CUDF_CUDA_TRY(cudaMemcpyAsync(
+            d_dst, d_data, chunk.row_count * elem_size, cudaMemcpyDeviceToDevice, stream.value()));
         } else {
           cuda::tae::decode_fixed_width(
             d_data, d_dst, chunk.row_count, elem_size, epoch_adjust, stream);
@@ -510,7 +546,8 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
 
       rmm::device_buffer null_mask;
       if (total_nulls > 0) {
-        null_mask = cudf::create_null_mask(col_total_rows, cudf::mask_state::ALL_VALID, stream, mr_ref);
+        null_mask =
+          cudf::create_null_mask(col_total_rows, cudf::mask_state::ALL_VALID, stream, mr_ref);
 
         // MO null bitmap (nsp section) is after data and area sections.
         // For fixed-width: areaLen = 0, so nsp starts at
@@ -523,13 +560,14 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
             continue;
           }
 
-          auto* d_src = chunk_device_ptrs[cr.chunk_index];
-          uint32_t data_len = chunk.row_count * elem_size;
+          auto* d_src                = chunk_device_ptrs[cr.chunk_index];
+          uint32_t data_len          = chunk.row_count * elem_size;
           uint32_t nsp_bitmap_offset = VEC_HEADER_SIZE + data_len + 4 + 0 + 4 + 24;
-          auto* d_validity = static_cast<uint32_t*>(null_mask.data());
-          cuda::tae::invert_null_mask(
-            d_src + nsp_bitmap_offset, d_validity + (bitmask_row_offset / 32),
-            chunk.row_count, stream);
+          auto* d_validity           = static_cast<uint32_t*>(null_mask.data());
+          cuda::tae::invert_null_mask(d_src + nsp_bitmap_offset,
+                                      d_validity + (bitmask_row_offset / 32),
+                                      chunk.row_count,
+                                      stream);
 
           bitmask_row_offset += chunk.row_count;
         }
@@ -551,10 +589,11 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
   if (filter_expr && filter_expr->size() > 0) {
     // Build a temporary table to evaluate the filter against ALL columns
     auto pre_filter_table = std::make_unique<cudf::table>(std::move(columns));
-    auto table_view = pre_filter_table->view();
+    auto table_view       = pre_filter_table->view();
 
     SIRIUS_LOG_DEBUG("[tae_converter] applying GPU filter on {} rows, {} columns",
-                     table_view.num_rows(), table_view.num_columns());
+                     table_view.num_rows(),
+                     table_view.num_columns());
 
     // Evaluate filter AST → boolean mask column
     auto mask = cudf::compute_column(table_view, filter_expr->back(), stream, mr_ref);
@@ -563,7 +602,8 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
     auto filtered_table = cudf::apply_boolean_mask(table_view, mask->view(), stream, mr_ref);
 
     SIRIUS_LOG_DEBUG("[tae_converter] filter reduced {} → {} rows",
-                     table_view.num_rows(), filtered_table->num_rows());
+                     table_view.num_rows(),
+                     filtered_table->num_rows());
 
     // Release filtered columns back into the vector
     columns = filtered_table->release();
@@ -574,9 +614,7 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
     std::vector<std::unique_ptr<cudf::column>> projected;
     projected.reserve(post_filter_projection_ids.size());
     for (auto id : post_filter_projection_ids) {
-      if (id < columns.size()) {
-        projected.push_back(std::move(columns[id]));
-      }
+      if (id < columns.size()) { projected.push_back(std::move(columns[id])); }
     }
     columns = std::move(projected);
   }
@@ -586,11 +624,11 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
   auto table = std::make_unique<cudf::table>(std::move(columns));
 
   SIRIUS_LOG_INFO("[tae_converter] produced GPU table: {} columns, {} rows",
-                  table->num_columns(), table->num_rows());
+                  table->num_columns(),
+                  table->num_rows());
 
   return std::make_unique<cucascade::gpu_table_representation>(
-    std::move(table),
-    *const_cast<cucascade::memory::memory_space*>(target_memory_space));
+    std::move(table), *const_cast<cucascade::memory::memory_space*>(target_memory_space));
 }
 
 }  // namespace detail

@@ -31,8 +31,7 @@ host_tae_representation::host_tae_representation(
   std::vector<std::size_t> post_filter_projection_ids)
   : idata_representation([&]() -> cucascade::memory::memory_space& {
       if (!memory_space) {
-        throw std::runtime_error(
-          "[host_tae_representation] null memory_space pointer");
+        throw std::runtime_error("[host_tae_representation] null memory_space pointer");
       }
       return *memory_space;
     }()),

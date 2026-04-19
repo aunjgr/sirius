@@ -124,8 +124,7 @@ void task_creator::prepare_for_query(const sirius::planner::query& query)
       } else {
         auto host_spaces = _mem_res_mgr.get_memory_spaces_for_tier(cucascade::memory::Tier::HOST);
         if (host_spaces.empty()) {
-          throw std::runtime_error(
-            "[task_creator] No HOST memory space configured for TAE scan");
+          throw std::runtime_error("[task_creator] No HOST memory space configured for TAE scan");
         }
         _tae_scan_operator_global_state_map.emplace(
           operator_id,
@@ -140,9 +139,9 @@ void task_creator::prepare_for_query(const sirius::planner::query& query)
       _gpu_operator_global_state_map.emplace(operator_id, std::move(gs));
     }
   }
-  _num_scans_in_plan =
-    _scan_operator_global_state_map.size() + _parquet_scan_operator_global_state_map.size() +
-    _tae_scan_operator_global_state_map.size();
+  _num_scans_in_plan = _scan_operator_global_state_map.size() +
+                       _parquet_scan_operator_global_state_map.size() +
+                       _tae_scan_operator_global_state_map.size();
 }
 
 void task_creator::drain_pending_tasks()
@@ -180,7 +179,7 @@ op::sirius_physical_operator* task_creator::get_operator_for_next_task(
     }
   }
   if (node->type == ::sirius::op::SiriusPhysicalOperatorType::GPU_TAE_SCAN) {
-    size_t operator_id          = node->get_operator_id();
+    size_t operator_id         = node->get_operator_id();
     auto tae_task_global_state = _tae_scan_operator_global_state_map.at(operator_id);
     if (tae_task_global_state->has_more_partitions()) {
       return node;
@@ -405,9 +404,9 @@ void task_creator::manager_loop()
                            destination_data_repositories.size());
           _task_scheduler->schedule(std::move(task));
         } else if (node->type == ::sirius::op::SiriusPhysicalOperatorType::GPU_TAE_SCAN) {
-          size_t operator_id        = node->get_operator_id();
+          size_t operator_id         = node->get_operator_id();
           auto tae_task_global_state = _tae_scan_operator_global_state_map.at(operator_id);
-          auto* tae_scan = &node->Cast<op::sirius_physical_gpu_tae_scan>();
+          auto* tae_scan             = &node->Cast<op::sirius_physical_gpu_tae_scan>();
           while (true) {
             pipeline->mark_task_created();
             auto partition = tae_task_global_state->claim_next_partition();
@@ -425,9 +424,8 @@ void task_creator::manager_loop()
               tae_scan->has_more_partitions = false;
             }
 
-            auto tae_task_local_state =
-              std::make_unique<op::scan::tae_scan_task_local_state>(*tae_task_global_state,
-                                                                     *partition);
+            auto tae_task_local_state = std::make_unique<op::scan::tae_scan_task_local_state>(
+              *tae_task_global_state, *partition);
 
             if (destination_data_repositories.empty()) {
               throw std::runtime_error(

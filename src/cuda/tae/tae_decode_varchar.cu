@@ -14,10 +14,8 @@
  * limitations under the License.
  */
 
-#include <cuda/tae/tae_decode_kernels.hpp>
-
 #include <cub/cub.cuh>
-#include <cub/block/block_reduce.cuh>
+#include <cuda/tae/tae_decode_kernels.hpp>
 #include <cuda_runtime.h>
 
 #include <cstdint>
@@ -26,8 +24,8 @@ namespace sirius::cuda::tae {
 
 namespace {
 
-constexpr uint32_t THREADS_PER_BLOCK = 256;
-constexpr uint32_t VARLENA_SIZE      = 24;
+constexpr uint32_t THREADS_PER_BLOCK  = 256;
+constexpr uint32_t VARLENA_SIZE       = 24;
 constexpr uint32_t VARLENA_INLINE_MAX = 23;
 
 // Device-side Varlena reader
@@ -93,35 +91,44 @@ __global__ void scatter_chars_kernel(const uint8_t* __restrict__ varlena_base,
   }
 }
 
-// Kernel: sum reduction for total chars using CUB::BlockReduce
-__global__ void sum_lengths_kernel(const uint8_t* __restrict__ varlena_base,
-                                   const uint8_t* __restrict__ area_base,
-                                   uint32_t n_rows,
-                                   unsigned long long* __restrict__ total)
-{
-  using BlockReduce = cub::BlockReduce<unsigned long long, THREADS_PER_BLOCK>;
-  __shared__ typename BlockReduce::TempStorage temp_storage;
+}  // anonymous namespace
 
-  unsigned long long thread_sum = 0;
-  for (uint32_t i = blockIdx.x * blockDim.x + threadIdx.x; i < n_rows;
-       i += gridDim.x * blockDim.x) {
-    const uint8_t* v = varlena_base + i * VARLENA_SIZE;
-    uint8_t first = v[0];
-    if (first <= VARLENA_INLINE_MAX) {
-      thread_sum += first;
-    } else {
-      uint32_t len;
-      memcpy(&len, v + 8, 4);
-      thread_sum += len;
-    }
+void decode_varchar_offsets(const uint8_t* d_varlena_base,
+                            const uint8_t* d_area_base,
+                            int32_t* d_offsets,
+                            void* d_temp_storage,
+                            std::size_t& temp_bytes,
+                            uint32_t n_rows,
+                            rmm::cuda_stream_view stream)
+{
+  if (n_rows == 0) {
+    if (d_offsets) { cudaMemsetAsync(d_offsets, 0, sizeof(int32_t), stream.value()); }
+    return;
   }
-  unsigned long long block_total = BlockReduce(temp_storage).Sum(thread_sum);
-  if (threadIdx.x == 0 && block_total > 0) {
-    atomicAdd(total, block_total);
-  }
+
+  // Temp-size query: always use nullptr to avoid running scan on uninitialized data
+  cub::DeviceScan::ExclusiveSum(nullptr, temp_bytes, d_offsets, d_offsets, n_rows + 1, stream.value());
+  if (!d_temp_storage) return;
+
+  uint32_t blocks = (n_rows + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
+  compute_lengths_kernel<<<blocks, THREADS_PER_BLOCK, 0, stream.value()>>>(
+    d_varlena_base, d_area_base, d_offsets, n_rows);
+  cub::DeviceScan::ExclusiveSum(
+    d_temp_storage, temp_bytes, d_offsets, d_offsets, n_rows + 1, stream.value());
 }
 
-}  // anonymous namespace
+void decode_varchar_scatter(const uint8_t* d_varlena_base,
+                            const uint8_t* d_area_base,
+                            const int32_t* d_offsets,
+                            uint8_t* d_chars,
+                            uint32_t n_rows,
+                            rmm::cuda_stream_view stream)
+{
+  if (n_rows == 0) return;
+  uint32_t blocks = (n_rows + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
+  scatter_chars_kernel<<<blocks, THREADS_PER_BLOCK, 0, stream.value()>>>(
+    d_varlena_base, d_area_base, d_offsets, d_chars, n_rows);
+}
 
 void decode_varchar(const uint8_t* d_varlena_base,
                     const uint8_t* d_area_base,
@@ -132,41 +139,16 @@ void decode_varchar(const uint8_t* d_varlena_base,
                     uint32_t n_rows,
                     rmm::cuda_stream_view stream)
 {
-  if (n_rows == 0) {
-    if (d_offsets) { cudaMemsetAsync(d_offsets, 0, sizeof(int32_t), stream.value()); }
-    return;
-  }
-
-  // CUB temp storage size query — only needs n_rows, no kernel launches
-  cub::DeviceScan::ExclusiveSum(
-    d_temp_storage, temp_bytes, d_offsets, d_offsets, n_rows + 1, stream.value());
-
-  if (!d_temp_storage) {
-    // Size query only — caller will allocate and call again
-    return;
-  }
-
-  uint32_t blocks = (n_rows + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
-
-  // Step 1: Compute per-row lengths into d_offsets[0..n_rows-1]
-  compute_lengths_kernel<<<blocks, THREADS_PER_BLOCK, 0, stream.value()>>>(
-    d_varlena_base, d_area_base, d_offsets, n_rows);
-
-  // Step 2: Exclusive prefix sum → d_offsets[0..n_rows] (length n_rows+1)
-  //         d_offsets[n_rows] = total chars
-  cub::DeviceScan::ExclusiveSum(
-    d_temp_storage, temp_bytes, d_offsets, d_offsets, n_rows + 1, stream.value());
-
-  // Step 3: Scatter character data
-  scatter_chars_kernel<<<blocks, THREADS_PER_BLOCK, 0, stream.value()>>>(
-    d_varlena_base, d_area_base, d_offsets, d_chars, n_rows);
+  decode_varchar_offsets(
+    d_varlena_base, d_area_base, d_offsets, d_temp_storage, temp_bytes, n_rows, stream);
+  if (!d_temp_storage) return;
+  decode_varchar_scatter(d_varlena_base, d_area_base, d_offsets, d_chars, n_rows, stream);
 }
 
 // Kernel: add a constant base to each offset value (for multi-block global adjustment)
 __global__ void adjust_offsets_kernel(int32_t* __restrict__ offsets, int32_t base, uint32_t count)
 {
-  for (uint32_t i = blockIdx.x * blockDim.x + threadIdx.x; i < count;
-       i += gridDim.x * blockDim.x) {
+  for (uint32_t i = blockIdx.x * blockDim.x + threadIdx.x; i < count; i += gridDim.x * blockDim.x) {
     offsets[i] += base;
   }
 }
@@ -176,18 +158,6 @@ void adjust_offsets(int32_t* d_offsets, int32_t base, uint32_t count, rmm::cuda_
   if (count == 0 || base == 0) return;
   uint32_t blocks = (count + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
   adjust_offsets_kernel<<<blocks, THREADS_PER_BLOCK, 0, stream.value()>>>(d_offsets, base, count);
-}
-
-void compute_varchar_total_chars_async(const uint8_t* d_varlena_base,
-                                       const uint8_t* d_area_base,
-                                       uint32_t n_rows,
-                                       unsigned long long* d_total,
-                                       rmm::cuda_stream_view stream)
-{
-  if (n_rows == 0) return;
-  uint32_t blocks = (n_rows + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
-  sum_lengths_kernel<<<blocks, THREADS_PER_BLOCK, 0, stream.value()>>>(
-    d_varlena_base, d_area_base, n_rows, d_total);
 }
 
 }  // namespace sirius::cuda::tae

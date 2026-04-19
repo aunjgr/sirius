@@ -16,10 +16,10 @@
 
 #pragma once
 
+#include <rmm/cuda_stream_view.hpp>
+
 #include <cstddef>
 #include <cstdint>
-
-#include <rmm/cuda_stream_view.hpp>
 
 namespace sirius::cuda::tae {
 
@@ -47,20 +47,54 @@ void decode_fixed_width(const uint8_t* d_src,
                         rmm::cuda_stream_view stream);
 
 /**
- * @brief Decode a varlena TAE column to cuDF string column format.
+ * @brief Compute cuDF string offsets from MO varlena column (pass 1 of 2).
  *
- * Caller provides separate pointers to the varlena struct array (data section)
- * and the area section (for big string payloads). These are obtained by parsing
- * the MO vector header offsets.
+ * Reads each Varlena struct to compute per-row string lengths, then runs
+ * CUB ExclusiveSum to produce offsets[0..n_rows]. offsets[n_rows] equals the
+ * total character bytes (usable for chars buffer allocation).
  *
- * Each Varlena is 24 bytes. If data[0] <= 23, data is inline (data[1..data[0]]).
- * Otherwise, it's a big marker with offset into area + length.
+ * Call with d_temp_storage=nullptr first to query CUB temp buffer size.
  *
- * This kernel produces cuDF string column format:
- *   offsets: int32[n_rows+1] — exclusive cumulative byte offsets
- *   chars:   packed UTF-8 character data
+ * @param d_varlena_base  Pointer to the varlena struct array (data section)
+ * @param d_area_base     Pointer to the area section (for big string reads)
+ * @param d_offsets       Output: int32[n_rows+1] offsets array
+ * @param d_temp_storage  CUB temporary storage (nullptr for size query)
+ * @param temp_bytes      [in/out] Size of temp storage
+ * @param n_rows          Number of rows
+ * @param stream          CUDA stream
+ */
+void decode_varchar_offsets(const uint8_t* d_varlena_base,
+                            const uint8_t* d_area_base,
+                            int32_t* d_offsets,
+                            void* d_temp_storage,
+                            std::size_t& temp_bytes,
+                            uint32_t n_rows,
+                            rmm::cuda_stream_view stream);
+
+/**
+ * @brief Scatter string data using precomputed offsets (pass 2 of 2).
  *
- * Uses CUB device-wide exclusive sum for the prefix-sum.
+ * Reads each Varlena struct and copies its string data to chars[offsets[i]].
+ * Must be called after decode_varchar_offsets has produced the offsets array.
+ *
+ * @param d_varlena_base  Pointer to the varlena struct array (data section)
+ * @param d_area_base     Pointer to the area section (for big string reads)
+ * @param d_offsets       Input: precomputed int32[n_rows+1] offsets
+ * @param d_chars         Output: character data buffer
+ * @param n_rows          Number of rows
+ * @param stream          CUDA stream
+ */
+void decode_varchar_scatter(const uint8_t* d_varlena_base,
+                            const uint8_t* d_area_base,
+                            const int32_t* d_offsets,
+                            uint8_t* d_chars,
+                            uint32_t n_rows,
+                            rmm::cuda_stream_view stream);
+
+/**
+ * @brief Decode a varlena TAE column to cuDF string column format (convenience).
+ *
+ * Equivalent to calling decode_varchar_offsets + decode_varchar_scatter.
  *
  * @param d_varlena_base  Pointer to the varlena struct array (data section)
  * @param d_area_base     Pointer to the area section (for big string reads)
@@ -92,31 +126,7 @@ void decode_varchar(const uint8_t* d_varlena_base,
  * @param count      Number of elements (typically n_rows + 1)
  * @param stream     CUDA stream
  */
-void adjust_offsets(int32_t* d_offsets,
-                    int32_t base,
-                    uint32_t count,
-                    rmm::cuda_stream_view stream);
-
-
-/**
- * @brief Compute total character data size for a varlena column (async).
- *
- * Launches a GPU reduction kernel without synchronizing. The caller must
- * zero d_total before the call and synchronize the stream after all async
- * launches to read the result.
- *
- * @param d_varlena_base  Pointer to the varlena struct array
- * @param d_area_base     Pointer to the area section
- * @param n_rows          Number of rows
- * @param d_total         Device accumulator (must be pre-zeroed)
- * @param stream          CUDA stream
- */
-void compute_varchar_total_chars_async(const uint8_t* d_varlena_base,
-                                       const uint8_t* d_area_base,
-                                       uint32_t n_rows,
-                                       unsigned long long* d_total,
-                                       rmm::cuda_stream_view stream);
-
+void adjust_offsets(int32_t* d_offsets, int32_t base, uint32_t count, rmm::cuda_stream_view stream);
 
 /**
  * @brief Invert a MO null bitmap to cuDF validity bitmask.
