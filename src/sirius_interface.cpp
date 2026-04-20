@@ -27,6 +27,8 @@
 #include "helper/type_conversions.hpp"
 #include "log/logging.hpp"
 
+#include <chrono>
+
 namespace sirius {
 
 void bind_prepared_statement_parameters(duckdb::PreparedStatementData& statement,
@@ -190,8 +192,11 @@ duckdb::unique_ptr<duckdb::QueryResult> sirius_interface::sirius_execute_pending
   auto& engine = get_sirius_engine();
   try {
     SIRIUS_LOG_DEBUG("Executing sirius_engine");
+    auto exec_t0 = std::chrono::high_resolution_clock::now();
     engine.execute();
-    SIRIUS_LOG_DEBUG("Done executing sirius_engine");
+    auto exec_t1 = std::chrono::high_resolution_clock::now();
+    auto exec_ms = std::chrono::duration<double, std::milli>(exec_t1 - exec_t0).count();
+    SIRIUS_LOG_INFO("[sirius_interface] engine.execute(): {:.2f} ms", exec_ms);
   } catch (std::exception& e) {
     duckdb::ErrorData error(e);
     SIRIUS_LOG_ERROR("Error in sirius_execute_pending_query_result: {}", error.RawMessage());
@@ -213,8 +218,12 @@ duckdb::unique_ptr<duckdb::QueryResult> sirius_interface::sirius_execute_query(
   duckdb::shared_ptr<sirius_prepared_statement_data>& statement_p,
   const duckdb::PendingQueryParameters& parameters)
 {
+  auto query_t0 = std::chrono::high_resolution_clock::now();
   auto pending_query =
     sirius_pending_statement_or_prepared_statement(context, query, statement_p, parameters);
+  auto plan_t1 = std::chrono::high_resolution_clock::now();
+  auto plan_ms = std::chrono::duration<double, std::milli>(plan_t1 - query_t0).count();
+  SIRIUS_LOG_INFO("[sirius_interface] planning: {:.2f} ms", plan_ms);
   D_ASSERT(sirius_active_query->is_open_result(*pending_query));
   duckdb::unique_ptr<duckdb::QueryResult> current_result;
   if (pending_query->HasError()) {
@@ -224,6 +233,9 @@ duckdb::unique_ptr<duckdb::QueryResult> sirius_interface::sirius_execute_query(
     current_result = sirius_execute_pending_query_result(*pending_query);
   }
   SIRIUS_LOG_DEBUG("Done sirius_execute_query");
+  auto query_t1 = std::chrono::high_resolution_clock::now();
+  auto total_ms = std::chrono::duration<double, std::milli>(query_t1 - query_t0).count();
+  SIRIUS_LOG_INFO("[sirius_interface] total query: {:.2f} ms", total_ms);
   return current_result;
 };
 

@@ -26,6 +26,7 @@
 #include "log/logging.hpp"
 #include "op/scan/cpu_source_task.hpp"
 #include "op/scan/parquet_scan_task.hpp"
+#include "op/scan/tae_scan_task.hpp"
 #include "op/sirius_physical_operator.hpp"
 #include "pipeline/completion_handler.hpp"
 #include "pipeline/sirius_pipeline_task_states.hpp"
@@ -253,7 +254,11 @@ void duckdb_scan_executor::manager_loop()
     }
 
     auto* scan_task = dynamic_cast<pipeline::sirius_pipeline_itask*>(task.get());
-    if (scan_task && scan_task->is<parquet_scan_task>()) {
+    bool is_parquet = scan_task && scan_task->is<parquet_scan_task>();
+    bool is_tae     = scan_task && scan_task->is<tae_scan_task>();
+
+    // Parquet-specific: configure scan caching options
+    if (is_parquet) {
       auto* parquet_task = dynamic_cast<parquet_scan_task*>(scan_task);
       if (_cache_level != cache_level::NONE) {
         bool wrap_batch_data     = _cache_level != cache_level::TABLE_GPU;
@@ -261,6 +266,10 @@ void duckdb_scan_executor::manager_loop()
         parquet_task->set_materialized_columns(
           wrap_batch_data, cache_decoded_table, _gpu_memory_space);
       }
+    }
+
+    // Request host memory reservation for scan tasks (parquet + TAE)
+    if (is_parquet || is_tae) {
       auto bytes_needed = scan_task->get_estimated_reservation_size();
       auto reservation  = _mem_mgr->request_reservation(
         cucascade::memory::any_memory_space_in_tier{cucascade::memory::Tier::HOST}, bytes_needed);

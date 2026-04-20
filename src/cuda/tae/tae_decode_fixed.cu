@@ -57,6 +57,54 @@ __global__ void copy_and_adjust_i64_kernel(const uint8_t* __restrict__ src,
   }
 }
 
+// ---------------------------------------------------------------------------
+// Batched kernels — 2D grid: blockIdx.y selects descriptor, blockIdx.x tiles rows
+// ---------------------------------------------------------------------------
+
+// Byte-level batched memcpy (non-temporal fixed-width).
+__global__ void batched_memcpy_kernel(const BatchedFixedDesc* __restrict__ descs,
+                                      uint8_t* __restrict__ dst,
+                                      uint32_t elem_size)
+{
+  auto const& desc = descs[blockIdx.y];
+  uint32_t bytes   = desc.n_rows * elem_size;
+  auto* src_base   = desc.src;
+  auto* dst_base   = dst + static_cast<std::size_t>(desc.row_offset) * elem_size;
+
+  for (uint32_t i = blockIdx.x * blockDim.x + threadIdx.x; i < bytes;
+       i += gridDim.x * blockDim.x) {
+    dst_base[i] = src_base[i];
+  }
+}
+
+// Batched copy + epoch adjust for 4-byte types (DATE: int32)
+__global__ void batched_copy_adjust_i32_kernel(const BatchedFixedDesc* __restrict__ descs,
+                                               int32_t* __restrict__ dst,
+                                               int32_t adjust)
+{
+  auto const& desc = descs[blockIdx.y];
+  for (uint32_t i = blockIdx.x * blockDim.x + threadIdx.x; i < desc.n_rows;
+       i += gridDim.x * blockDim.x) {
+    int32_t val;
+    memcpy(&val, desc.src + i * sizeof(int32_t), sizeof(int32_t));
+    dst[desc.row_offset + i] = val - adjust;
+  }
+}
+
+// Batched copy + epoch adjust for 8-byte types (TIMESTAMP/DATETIME: int64)
+__global__ void batched_copy_adjust_i64_kernel(const BatchedFixedDesc* __restrict__ descs,
+                                               int64_t* __restrict__ dst,
+                                               int64_t adjust)
+{
+  auto const& desc = descs[blockIdx.y];
+  for (uint32_t i = blockIdx.x * blockDim.x + threadIdx.x; i < desc.n_rows;
+       i += gridDim.x * blockDim.x) {
+    int64_t val;
+    memcpy(&val, desc.src + i * sizeof(int64_t), sizeof(int64_t));
+    dst[desc.row_offset + i] = val - adjust;
+  }
+}
+
 }  // anonymous namespace
 
 void decode_fixed_width(const uint8_t* d_src,
@@ -87,6 +135,43 @@ void decode_fixed_width(const uint8_t* d_src,
       CUDF_CUDA_TRY(cudaMemcpyAsync(
         d_dst, d_src, n_rows * elem_size, cudaMemcpyDeviceToDevice, stream.value()));
     }
+  }
+}
+
+void batched_decode_fixed_width(const BatchedFixedDesc* d_descs,
+                                uint32_t n_descs,
+                                uint8_t* d_dst,
+                                uint32_t elem_size,
+                                int64_t epoch_adjust,
+                                uint32_t max_block_rows,
+                                rmm::cuda_stream_view stream)
+{
+  if (n_descs == 0 || max_block_rows == 0) return;
+
+  if (epoch_adjust == 0) {
+    // Byte-level batched copy
+    uint32_t max_bytes = max_block_rows * elem_size;
+    uint32_t grid_x    = (max_bytes + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
+    dim3 grid(grid_x, n_descs);
+    batched_memcpy_kernel<<<grid, THREADS_PER_BLOCK, 0, stream.value()>>>(
+      d_descs, d_dst, elem_size);
+  } else if (elem_size == 4) {
+    uint32_t grid_x = (max_block_rows + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
+    dim3 grid(grid_x, n_descs);
+    batched_copy_adjust_i32_kernel<<<grid, THREADS_PER_BLOCK, 0, stream.value()>>>(
+      d_descs, reinterpret_cast<int32_t*>(d_dst), static_cast<int32_t>(epoch_adjust));
+  } else if (elem_size == 8) {
+    uint32_t grid_x = (max_block_rows + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
+    dim3 grid(grid_x, n_descs);
+    batched_copy_adjust_i64_kernel<<<grid, THREADS_PER_BLOCK, 0, stream.value()>>>(
+      d_descs, reinterpret_cast<int64_t*>(d_dst), epoch_adjust);
+  } else {
+    // Fallback: byte-level copy
+    uint32_t max_bytes = max_block_rows * elem_size;
+    uint32_t grid_x    = (max_bytes + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
+    dim3 grid(grid_x, n_descs);
+    batched_memcpy_kernel<<<grid, THREADS_PER_BLOCK, 0, stream.value()>>>(
+      d_descs, d_dst, elem_size);
   }
 }
 

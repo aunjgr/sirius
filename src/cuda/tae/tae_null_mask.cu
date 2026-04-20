@@ -50,6 +50,21 @@ __global__ void invert_mask_kernel(const uint32_t* __restrict__ src,
   }
 }
 
+// Batched null mask inversion — 2D grid: blockIdx.y = desc, blockIdx.x = word tile
+__global__ void batched_invert_mask_kernel(const BatchedNullMaskDesc* __restrict__ descs,
+                                           uint32_t* __restrict__ dst)
+{
+  auto const& desc = descs[blockIdx.y];
+  uint32_t n_words = (desc.n_rows + 31) / 32;
+  auto const* src  = reinterpret_cast<const uint32_t*>(desc.src);
+  auto* out        = dst + desc.bitmask_word_offset;
+
+  for (uint32_t i = blockIdx.x * blockDim.x + threadIdx.x; i < n_words;
+       i += gridDim.x * blockDim.x) {
+    out[i] = ~src[i];
+  }
+}
+
 }  // anonymous namespace
 
 void invert_null_mask(const uint8_t* d_src,
@@ -67,6 +82,24 @@ void invert_null_mask(const uint8_t* d_src,
 
   invert_mask_kernel<<<blocks, THREADS_PER_BLOCK, 0, stream.value()>>>(
     reinterpret_cast<const uint32_t*>(d_src), d_dst, n_words);
+}
+
+void batched_invert_null_mask(const BatchedNullMaskDesc* d_descs,
+                              uint32_t n_descs,
+                              uint32_t* d_validity,
+                              rmm::cuda_stream_view stream)
+{
+  if (n_descs == 0) return;
+
+  // Find max n_words across descriptors for grid X sizing.
+  // Since descriptors are on device, use a conservative upper bound:
+  // max 8192 rows → 256 words → 1 block at 256 threads.
+  // Grid: (1, n_descs) is sufficient for typical TAE blocks.
+  uint32_t max_words = (8192 + 31) / 32;  // 256 words
+  uint32_t grid_x    = (max_words + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
+  dim3 grid(grid_x, n_descs);
+  batched_invert_mask_kernel<<<grid, THREADS_PER_BLOCK, 0, stream.value()>>>(
+    d_descs, d_validity);
 }
 
 }  // namespace sirius::cuda::tae

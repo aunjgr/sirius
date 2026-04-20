@@ -27,6 +27,8 @@ endif()
 # Optional features
 option(ENABLE_STREAM_CHECK
        "Enable stream check library for debugging default stream usage" OFF)
+option(SIRIUS_PROFILE
+       "Enable CUDA event instrumentation and detailed timing logs" OFF)
 
 # In the vcpkg build, vcpkg headers must take priority over: 1) conda's CCCL
 # 3.1.4 (injected via CXXFLAGS as -I.../include/cccl) 2) DuckDB's bundled fmt
@@ -308,6 +310,10 @@ foreach(_target sirius_extension sirius_loadable_extension)
   if(SIRIUS_LEGACY_COMPILE_DEFINITIONS)
     target_compile_definitions(${_target}
                                PRIVATE ${SIRIUS_LEGACY_COMPILE_DEFINITIONS})
+  endif()
+
+  if(SIRIUS_PROFILE)
+    target_compile_definitions(${_target} PRIVATE SIRIUS_PROFILE)
   endif()
 
   target_link_libraries(

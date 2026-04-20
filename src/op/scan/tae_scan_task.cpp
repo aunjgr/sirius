@@ -37,6 +37,7 @@
 
 // standard library
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <set>
 #include <stdexcept>
@@ -244,6 +245,8 @@ std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_
   auto& g_state   = _global_state->cast<tae_scan_task_global_state>();
   auto& l_state   = _local_state->cast<tae_scan_task_local_state>();
   auto& partition = l_state.get_partition();
+
+  auto scan_t0 = std::chrono::high_resolution_clock::now();
 
   SIRIUS_LOG_INFO("[tae_scan_task] scanning object: {} ({} rows, {} bytes)",
                   partition.file_path,
@@ -551,6 +554,12 @@ std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_
                   total_rows,
                   total_compressed,
                   total_uncompressed);
+
+  auto scan_t1   = std::chrono::high_resolution_clock::now();
+  auto scan_ms   = std::chrono::duration<double, std::milli>(scan_t1 - scan_t0).count();
+  SIRIUS_LOG_INFO("[tae_scan_task] scan I/O total: {:.2f} ms ({} bytes pinned)",
+                  scan_ms,
+                  write_offset);
 
   return std::make_unique<op::pipelineable_operator_data>(
     std::vector<std::shared_ptr<cucascade::data_batch>>{std::move(batch)});
