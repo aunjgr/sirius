@@ -54,9 +54,10 @@ namespace sirius::op::scan {
 // TAE Object Partition — work unit for one TAE object file
 //===----------------------------------------------------------------------===//
 struct tae_object_partition {
-  std::string file_path;  ///< Full URL (data_dir + relative path)
-  uint32_t rows;          ///< Total rows in the object
-  uint32_t size_bytes;    ///< File size on disk
+  std::string file_path;             ///< Full URL (data_dir + relative path)
+  uint32_t rows;                     ///< Total rows in the object
+  uint32_t size_bytes;               ///< File size on disk
+  std::vector<uint8_t> sort_key_zm;  ///< Object-level sort-key zone map (64 bytes, or empty)
 };
 
 //===----------------------------------------------------------------------===//
@@ -123,6 +124,8 @@ class tae_scan_task_global_state : public pipeline::sirius_pipeline_task_global_
     return _pushed_filters;
   }
 
+  [[nodiscard]] int32_t get_sort_column_idx() const { return _sort_column_idx; }
+
   void rebind(duckdb::shared_ptr<pipeline::sirius_pipeline> pipeline,
               sirius_physical_gpu_tae_scan* scan_op)
   {
@@ -144,6 +147,7 @@ class tae_scan_task_global_state : public pipeline::sirius_pipeline_task_global_
   // Schema info (from TAEScanBindData)
   std::vector<std::string> _all_col_names;
   std::vector<uint8_t> _all_col_mo_oids;
+  int32_t _sort_column_idx = -1;
 
   // Filter state
   std::shared_ptr<gpu_expression_translator::translated_expression> _translated_filter;

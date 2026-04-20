@@ -152,14 +152,16 @@ tae_scan_task_global_state::tae_scan_task_global_state(
 
   _all_col_names   = bind_data.all_col_names;
   _all_col_mo_oids = bind_data.all_col_mo_oids;
+  _sort_column_idx = bind_data.sort_column_idx;
 
   // Build object partitions
   _partitions.reserve(bind_data.objects.size());
   for (auto& obj : bind_data.objects) {
     tae_object_partition p;
-    p.file_path  = bind_data.data_dir + "/" + obj.file_path;
-    p.rows       = obj.rows;
-    p.size_bytes = obj.size_bytes;
+    p.file_path   = bind_data.data_dir + "/" + obj.file_path;
+    p.rows        = obj.rows;
+    p.size_bytes  = obj.size_bytes;
+    p.sort_key_zm = obj.sort_key_zm;
     _partitions.push_back(std::move(p));
   }
 
@@ -248,6 +250,20 @@ std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_
                   partition.rows,
                   partition.size_bytes);
 
+  // Object-level sort-key zone map pruning: if the manifest provided a 64-byte
+  // sort-key zone map and all pushed filters on that column fail, skip the
+  // entire object without reading metadata or opening the file for column data.
+  auto& pushed_filters = g_state.get_pushed_filters();
+  if (!partition.sort_key_zm.empty() && !pushed_filters.empty() &&
+      g_state.get_sort_column_idx() >= 0) {
+    auto sort_seqnum = static_cast<uint16_t>(g_state.get_sort_column_idx());
+    if (!tae::ZoneMapPassesFilters(pushed_filters, partition.sort_key_zm.data(), sort_seqnum)) {
+      SIRIUS_LOG_INFO("[tae_scan_task] object pruned by sort-key zone map: {}",
+                      partition.file_path);
+      return nullptr;
+    }
+  }
+
   // 1. Open file via DuckDB FileSystem (handles local files and HTTP URLs)
   auto& fs    = duckdb::FileSystem::GetFileSystem(g_state.get_client_context());
   auto handle = fs.OpenFile(partition.file_path, duckdb::FileOpenFlags::FILE_FLAGS_READ);
@@ -327,7 +343,6 @@ std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_
   uint32_t total_rows = 0;
 
   // Zone-map pruning: collect unique filter seqnums for efficient per-block check
-  auto& pushed_filters = g_state.get_pushed_filters();
   std::vector<uint16_t> filter_seqnums;
   {
     std::set<uint16_t> seen;

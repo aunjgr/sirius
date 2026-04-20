@@ -107,7 +107,8 @@ void decode_varchar_offsets(const uint8_t* d_varlena_base,
   }
 
   // Temp-size query: always use nullptr to avoid running scan on uninitialized data
-  cub::DeviceScan::ExclusiveSum(nullptr, temp_bytes, d_offsets, d_offsets, n_rows + 1, stream.value());
+  cub::DeviceScan::ExclusiveSum(
+    nullptr, temp_bytes, d_offsets, d_offsets, n_rows + 1, stream.value());
   if (!d_temp_storage) return;
 
   uint32_t blocks = (n_rows + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
