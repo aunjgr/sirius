@@ -417,16 +417,87 @@ std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_
   std::vector<host_tae_representation::column_chunk_info> chunks;
   std::size_t write_offset = 0;
 
-  for (auto& r : reads) {
-    // Read compressed data directly into pinned buffer to avoid a temp allocation + memcpy.
-    // CRC files still need the stripping pass through an intermediate buffer.
-    if (!crc) {
-      fs.Read(*handle, host_data.data() + write_offset, r.compressed_length, r.offset);
-    } else {
-      auto compressed = read_bytes(fs, *handle, r.offset, r.compressed_length, crc);
-      std::memcpy(host_data.data() + write_offset, compressed.data(), compressed.size());
-    }
+  // Coalesced I/O: merge adjacent reads into single pread() calls.
+  // Reads are sorted by file offset and pinned buffer is filled in the same order,
+  // so adjacent file reads → adjacent pinned regions → one large read suffices.
+  // For CRC files: read the physical range, strip CRC in memory, copy slices to pinned buffer.
+  // Groups are capped at MAX_COALESCE_GROUP reads to bound temporary memory.
+  static constexpr std::size_t MAX_COALESCE_GROUP = 32;
+  {
+    std::size_t group_start = 0;
+    std::size_t pinned_dest = 0;
+    uint32_t io_calls       = 0;
 
+    auto flush_group = [&](std::size_t group_end) {
+      auto& first               = reads[group_start];
+      auto& last                = reads[group_end - 1];
+      std::size_t group_log_end = last.offset + last.compressed_length;
+      std::size_t group_log_len = group_log_end - first.offset;
+
+      if (!crc) {
+        // Non-CRC: read directly into pinned buffer (contiguous region)
+        fs.Read(*handle, host_data.data() + pinned_dest, group_log_len, first.offset);
+      } else {
+        // CRC: compute physical range, read once, strip CRC, copy each chunk
+        uint64_t first_blk  = first.offset / tae::CRC_CONTENT_SIZE;
+        uint64_t last_blk   = (group_log_end - 1) / tae::CRC_CONTENT_SIZE;
+        uint64_t phys_start = first_blk * tae::CRC_BLOCK_SIZE;
+        uint64_t phys_end   = (last_blk + 1) * tae::CRC_BLOCK_SIZE;
+        auto file_size      = handle->GetFileSize();
+        if (phys_end > static_cast<uint64_t>(file_size))
+          phys_end = static_cast<uint64_t>(file_size);
+
+        uint64_t raw_size = phys_end - phys_start;
+        std::vector<uint8_t> raw(raw_size);
+        fs.Read(*handle, raw.data(), raw_size, phys_start);
+
+        // Strip CRC headers from raw blocks
+        std::vector<uint8_t> stripped;
+        stripped.reserve((raw_size / tae::CRC_BLOCK_SIZE + 1) * tae::CRC_CONTENT_SIZE);
+        for (uint64_t off = 0; off < raw_size; off += tae::CRC_BLOCK_SIZE) {
+          uint64_t remaining = raw_size - off;
+          if (remaining <= tae::CRC_SIZE) break;
+          uint32_t content_len = static_cast<uint32_t>(
+            std::min(static_cast<uint64_t>(tae::CRC_CONTENT_SIZE), remaining - tae::CRC_SIZE));
+          stripped.insert(stripped.end(),
+                          raw.data() + off + tae::CRC_SIZE,
+                          raw.data() + off + tae::CRC_SIZE + content_len);
+        }
+
+        // Copy each chunk's logical slice to pinned buffer
+        uint64_t content_start = first_blk * tae::CRC_CONTENT_SIZE;
+        std::size_t dest       = pinned_dest;
+        for (std::size_t j = group_start; j < group_end; j++) {
+          uint64_t local_off = reads[j].offset - content_start;
+          if (local_off + reads[j].compressed_length > stripped.size()) {
+            throw std::runtime_error("CRC coalesced read: offset exceeds stripped range");
+          }
+          std::memcpy(
+            host_data.data() + dest, stripped.data() + local_off, reads[j].compressed_length);
+          dest += reads[j].compressed_length;
+        }
+      }
+
+      io_calls++;
+      for (std::size_t j = group_start; j < group_end; j++)
+        pinned_dest += reads[j].compressed_length;
+      group_start = group_end;
+    };
+
+    for (std::size_t i = 0; i <= reads.size(); i++) {
+      std::size_t group_len = i - group_start;
+      bool adjacent =
+        (i < reads.size()) &&
+        (i == 0 || reads[i].offset == reads[i - 1].offset + reads[i - 1].compressed_length);
+      bool end_of_group =
+        (i == reads.size()) || (!adjacent && i > group_start) || (group_len >= MAX_COALESCE_GROUP);
+      if (end_of_group && i > group_start) { flush_group(i); }
+    }
+    SIRIUS_LOG_INFO(
+      "[tae_scan_task] coalesced {} reads into {} I/O calls (crc={})", reads.size(), io_calls, crc);
+  }
+
+  for (auto& r : reads) {
     // Find the MO type for this column
     auto& mo_oids           = g_state.get_column_mo_oids();
     tae::MOTypeOid type_oid = tae::MO_T_any;
