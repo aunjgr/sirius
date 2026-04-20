@@ -126,13 +126,18 @@ void task_creator::prepare_for_query(const sirius::planner::query& query)
         if (host_spaces.empty()) {
           throw std::runtime_error("[task_creator] No HOST memory space configured for TAE scan");
         }
+        const auto& op_params =
+          _client_context->registered_state->Get<duckdb::SiriusContext>("sirius_state")
+            ->get_config()
+            .get_operator_params();
         _tae_scan_operator_global_state_map.emplace(
           operator_id,
           std::make_shared<op::scan::tae_scan_task_global_state>(
             pipeline,
             &source_operator->Cast<op::sirius_physical_gpu_tae_scan>(),
             *_client_context,
-            const_cast<cucascade::memory::memory_space*>(host_spaces[0])));
+            const_cast<cucascade::memory::memory_space*>(host_spaces[0]),
+            op_params.scan_task_batch_size));
       }
     } else {
       auto gs = std::make_shared<pipeline::gpu_pipeline_task_global_state>(pipeline);
@@ -407,10 +412,21 @@ void task_creator::manager_loop()
           size_t operator_id         = node->get_operator_id();
           auto tae_task_global_state = _tae_scan_operator_global_state_map.at(operator_id);
           auto* tae_scan             = &node->Cast<op::sirius_physical_gpu_tae_scan>();
+          auto batch_size_limit      = tae_task_global_state->get_scan_task_batch_size();
           while (true) {
             pipeline->mark_task_created();
-            auto partition = tae_task_global_state->claim_next_partition();
-            if (!partition.has_value()) {
+
+            // Batch multiple partitions per task up to scan_task_batch_size
+            std::vector<op::scan::tae_object_partition> batch_partitions;
+            std::size_t batch_bytes = 0;
+            while (batch_bytes < batch_size_limit) {
+              auto partition = tae_task_global_state->claim_next_partition();
+              if (!partition.has_value()) break;
+              batch_bytes += partition->size_bytes;
+              batch_partitions.push_back(std::move(*partition));
+            }
+
+            if (batch_partitions.empty()) {
               pipeline->mark_task_completed();
               if (pipeline->is_pipeline_finished()) {
                 auto output_consumers = pipeline->get_output_consumers();
@@ -425,7 +441,7 @@ void task_creator::manager_loop()
             }
 
             auto tae_task_local_state = std::make_unique<op::scan::tae_scan_task_local_state>(
-              *tae_task_global_state, *partition);
+              *tae_task_global_state, std::move(batch_partitions));
 
             if (destination_data_repositories.empty()) {
               throw std::runtime_error(

@@ -68,7 +68,8 @@ class tae_scan_task_global_state : public pipeline::sirius_pipeline_task_global_
   tae_scan_task_global_state(duckdb::shared_ptr<pipeline::sirius_pipeline> pipeline,
                              sirius_physical_gpu_tae_scan* scan_op,
                              duckdb::ClientContext& client_ctx,
-                             cucascade::memory::memory_space* host_memory_space);
+                             cucascade::memory::memory_space* host_memory_space,
+                             uint64_t scan_task_batch_size);
 
   [[nodiscard]] sirius_physical_gpu_tae_scan& get_operator() { return *_scan_op; }
 
@@ -126,6 +127,8 @@ class tae_scan_task_global_state : public pipeline::sirius_pipeline_task_global_
 
   [[nodiscard]] int32_t get_sort_column_idx() const { return _sort_column_idx; }
 
+  [[nodiscard]] uint64_t get_scan_task_batch_size() const { return _scan_task_batch_size; }
+
   void rebind(duckdb::shared_ptr<pipeline::sirius_pipeline> pipeline,
               sirius_physical_gpu_tae_scan* scan_op)
   {
@@ -155,6 +158,8 @@ class tae_scan_task_global_state : public pipeline::sirius_pipeline_task_global_
 
   // Zone-map pushed filters (extracted from DuckDB TableFilterSet)
   std::vector<tae::PushedFilter> _pushed_filters;
+
+  uint64_t _scan_task_batch_size;
 };
 
 //===----------------------------------------------------------------------===//
@@ -162,16 +167,22 @@ class tae_scan_task_global_state : public pipeline::sirius_pipeline_task_global_
 //===----------------------------------------------------------------------===//
 class tae_scan_task_local_state : public pipeline::sirius_pipeline_task_local_state {
  public:
-  tae_scan_task_local_state(tae_scan_task_global_state& g_state, tae_object_partition partition);
+  tae_scan_task_local_state(tae_scan_task_global_state& g_state,
+                            std::vector<tae_object_partition> partitions);
 
-  [[nodiscard]] tae_object_partition const& get_partition() const { return _partition; }
+  [[nodiscard]] std::vector<tae_object_partition> const& get_partitions() const
+  {
+    return _partitions;
+  }
   [[nodiscard]] std::size_t get_task_consumption_basis() const override
   {
-    return _partition.size_bytes;
+    std::size_t total = 0;
+    for (auto& p : _partitions) total += p.size_bytes;
+    return total;
   }
 
  private:
-  tae_object_partition _partition;
+  std::vector<tae_object_partition> _partitions;
 };
 
 //===----------------------------------------------------------------------===//
