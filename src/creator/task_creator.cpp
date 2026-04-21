@@ -36,6 +36,7 @@
 #include <duckdb/execution/execution_context.hpp>
 #include <duckdb/parallel/thread_context.hpp>
 
+#include <cstdlib>
 #include <optional>
 
 namespace sirius::creator {
@@ -413,10 +414,32 @@ void task_creator::manager_loop()
           auto tae_task_global_state = _tae_scan_operator_global_state_map.at(operator_id);
           auto* tae_scan             = &node->Cast<op::sirius_physical_gpu_tae_scan>();
           auto batch_size_limit      = tae_task_global_state->get_scan_task_batch_size();
+
+          // Adaptive batching: scale the byte cap inversely by projected column count.
+          // Wider projections do more GPU work per object, so smaller batches reduce
+          // tail latency. Controlled by SIRIUS_TAE_BASELINE_COLS (default 4; 0 disables).
+          {
+            std::size_t proj_cols     = tae_scan->projection_ids.empty()
+                                          ? tae_scan->column_ids.size()
+                                          : tae_scan->projection_ids.size();
+            std::size_t baseline_cols = 4;
+            if (const char* env = std::getenv("SIRIUS_TAE_BASELINE_COLS")) {
+              try {
+                baseline_cols = static_cast<std::size_t>(std::stoull(env));
+              } catch (...) {
+              }
+            }
+            if (baseline_cols > 0 && proj_cols > 0) {
+              auto scaled = batch_size_limit * baseline_cols / std::max<std::size_t>(1, proj_cols);
+              // Floor at 32MB so a single moderately-sized partition still fits.
+              batch_size_limit = std::max<uint64_t>(scaled, 32ULL * 1024 * 1024);
+            }
+          }
+
           while (true) {
             pipeline->mark_task_created();
 
-            // Batch multiple partitions per task up to scan_task_batch_size
+            // Batch multiple partitions per task up to (adaptive) batch_size_limit
             std::vector<op::scan::tae_object_partition> batch_partitions;
             std::size_t batch_bytes = 0;
             while (batch_bytes < batch_size_limit) {
