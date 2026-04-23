@@ -312,15 +312,15 @@ std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_
   // --- Lambda: process one TAE object (zone-map → metadata → read plan) ---
 
   auto process_object = [&](const tae_object_partition& partition) -> std::optional<ObjectResult> {
-    SIRIUS_LOG_INFO("[tae_scan_task] scanning object: {} ({} rows, {} bytes)",
-                    partition.file_path, partition.rows, partition.size_bytes);
+    SIRIUS_LOG_DEBUG("[tae_scan_task] scanning object: {} ({} rows, {} bytes)",
+                     partition.file_path, partition.rows, partition.size_bytes);
 
     // Object-level sort-key zone map pruning
     if (!partition.sort_key_zm.empty() && !pushed_filters.empty() && sort_column_idx >= 0) {
       auto sort_seqnum = static_cast<uint16_t>(sort_column_idx);
       if (!tae::ZoneMapPassesFilters(pushed_filters, partition.sort_key_zm.data(), sort_seqnum)) {
-        SIRIUS_LOG_INFO("[tae_scan_task] object pruned by sort-key zone map: {}",
-                        partition.file_path);
+        SIRIUS_LOG_DEBUG("[tae_scan_task] object pruned by sort-key zone map: {}",
+                         partition.file_path);
         return std::nullopt;
       }
     }
@@ -383,12 +383,12 @@ std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_
     }
 
     if (blocks_pruned > 0) {
-      SIRIUS_LOG_INFO("[tae_scan_task] zone-map pruned {}/{} blocks for {}",
-                      blocks_pruned, obj_meta.block_count, partition.file_path);
+      SIRIUS_LOG_DEBUG("[tae_scan_task] zone-map pruned {}/{} blocks for {}",
+                       blocks_pruned, obj_meta.block_count, partition.file_path);
     }
 
     if (result.reads.empty() || result.total_rows == 0) {
-      SIRIUS_LOG_INFO("[tae_scan_task] no data after zone-map filtering: {}", partition.file_path);
+      SIRIUS_LOG_DEBUG("[tae_scan_task] no data after zone-map filtering: {}", partition.file_path);
       return std::nullopt;
     }
 
@@ -415,12 +415,12 @@ std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_
   }
 
   if (objects.empty()) {
-    SIRIUS_LOG_INFO("[tae_scan_task] all {} objects pruned, no data to produce", objects_scanned);
+    SIRIUS_LOG_TRACE("[tae_scan_task] all {} objects pruned, no data to produce", objects_scanned);
     return nullptr;
   }
 
-  SIRIUS_LOG_INFO("[tae_scan_task] batch: {} objects ({} scanned), {} cumulative compressed bytes",
-                  objects.size(), objects_scanned, cumulative_compressed);
+  SIRIUS_LOG_TRACE("[tae_scan_task] batch: {} objects ({} scanned), {} cumulative compressed bytes",
+                   objects.size(), objects_scanned, cumulative_compressed);
 
   // --- Phase 2: Compute combined totals ---
 
@@ -512,7 +512,7 @@ std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_
           (i == obj.reads.size()) || (!adjacent && i > group_start) || (group_len >= MAX_COALESCE_GROUP);
         if (end_of_group && i > group_start) { flush_group(i); }
       }
-      SIRIUS_LOG_INFO(
+      SIRIUS_LOG_DEBUG(
         "[tae_scan_task] coalesced {} reads into {} I/O calls (crc={})", obj.reads.size(), io_calls, obj.crc);
     }
 
@@ -558,13 +558,13 @@ std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_
 
   auto batch = std::make_shared<cucascade::data_batch>(get_next_batch_id(), std::move(repr));
 
-  SIRIUS_LOG_INFO("[tae_scan_task] produced batch: {} objects, {} rows, {} compressed, {} uncompressed",
-                  objects.size(), total_rows, total_compressed, total_uncompressed);
+  SIRIUS_LOG_TRACE("[tae_scan_task] produced batch: {} objects, {} rows, {} compressed, {} uncompressed",
+                   objects.size(), total_rows, total_compressed, total_uncompressed);
 
   auto scan_t1 = std::chrono::high_resolution_clock::now();
   auto scan_ms = std::chrono::duration<double, std::milli>(scan_t1 - scan_t0).count();
-  SIRIUS_LOG_INFO("[tae_scan_task] scan I/O total: {:.2f} ms ({} bytes pinned)",
-                  scan_ms, global_offset);
+  SIRIUS_LOG_TRACE("[tae_scan_task] scan I/O total: {:.2f} ms ({} bytes pinned)",
+                   scan_ms, global_offset);
 
   return std::make_unique<op::pipelineable_operator_data>(
     std::vector<std::shared_ptr<cucascade::data_batch>>{std::move(batch)});

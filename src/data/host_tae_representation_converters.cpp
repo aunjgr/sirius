@@ -764,9 +764,9 @@ std::unique_ptr<cucascade::idata_representation> convert_host_tae_to_gpu(
 
   auto table = std::make_unique<cudf::table>(std::move(columns));
 
-  SIRIUS_LOG_INFO("[tae_converter] produced GPU table: {} columns, {} rows",
-                  table->num_columns(),
-                  table->num_rows());
+  SIRIUS_LOG_TRACE("[tae_converter] produced GPU table: {} columns, {} rows",
+                   table->num_columns(),
+                   table->num_rows());
 
   return std::make_unique<cucascade::gpu_table_representation>(
     std::move(table), *const_cast<cucascade::memory::memory_space*>(target_memory_space));
