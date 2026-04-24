@@ -268,7 +268,7 @@ sirius_physical_plan_generator::create_plan(duckdb::LogicalGet& op)
     }
     auto projection = duckdb::make_uniq<sirius::op::sirius_physical_projection>(
       sirius::from_duckdb_vec(original_types),
-      std::move(proj_expressions),
+      sirius::wrap_many(std::move(proj_expressions)),
       op.estimated_cardinality);
     projection->children.push_back(std::move(filter));
     return std::move(projection);
