@@ -66,6 +66,22 @@ endif()
 
 # Dependencies
 find_package(cudf REQUIRED CONFIG)
+find_package(kvikio CONFIG REQUIRED)
+# kvikio pulls in BS::thread_pool whose INTERFACE_COMPILE_FEATURES include
+# `cuda_std_17`. That feature propagates transitively into duckdb_static
+# (a non-CUDA target), causing CMake to fail with "No known features for CUDA
+# compiler". Strip `cuda_std_17` here; sirius CUDA targets set CUDA_STANDARD
+# explicitly already.
+foreach(_bs_target BS::thread_pool rapids_bs_thread_pool)
+  if(TARGET ${_bs_target})
+    get_target_property(_features ${_bs_target} INTERFACE_COMPILE_FEATURES)
+    if(_features)
+      list(REMOVE_ITEM _features cuda_std_17)
+      set_target_properties(${_bs_target} PROPERTIES
+        INTERFACE_COMPILE_FEATURES "${_features}")
+    endif()
+  endif()
+endforeach()
 find_package(spdlog REQUIRED CONFIG)
 find_package(yaml-cpp REQUIRED CONFIG)
 find_package(absl REQUIRED CONFIG)
@@ -323,6 +339,7 @@ foreach(_target sirius_extension sirius_loadable_extension)
     spdlog::spdlog
     cuCascade::cucascade
     yaml-cpp::yaml-cpp
+    kvikio::kvikio
     lz4
     nvcomp)
 

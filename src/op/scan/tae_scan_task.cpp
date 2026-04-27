@@ -35,10 +35,14 @@
 // duckdb
 #include <duckdb/common/file_system.hpp>
 
+// kvikio (parallel async file I/O, optional GDS)
+#include <kvikio/file_handle.hpp>
+
 // standard library
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <future>
 #include <set>
 #include <stdexcept>
 #include <unordered_map>
@@ -306,6 +310,8 @@ std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_
     std::size_t total_compressed   = 0;
     std::size_t total_uncompressed = 0;
     std::unique_ptr<duckdb::FileHandle> handle;
+    std::unique_ptr<kvikio::FileHandle> kvikio_handle;
+    std::string file_path;
     bool crc = false;
   };
 
@@ -326,6 +332,7 @@ std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_
     }
 
     ObjectResult result;
+    result.file_path = partition.file_path;
     result.handle = fs.OpenFile(partition.file_path, duckdb::FileOpenFlags::FILE_FLAGS_READ);
     result.crc    = detect_crc_format(fs, *result.handle);
 
@@ -396,6 +403,9 @@ std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_
       result.total_compressed += r.compressed_length;
       result.total_uncompressed += r.origin_size;
     }
+    // Open kvikio handle for parallel async reads in Phase 3. Done last so we
+    // skip the kvikio open cost for pruned objects.
+    result.kvikio_handle = std::make_unique<kvikio::FileHandle>(partition.file_path, "r");
     return result;
   };
 
@@ -445,20 +455,48 @@ std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_
     std::sort(obj.reads.begin(), obj.reads.end(),
               [](const ReadChunk& a, const ReadChunk& b) { return a.offset < b.offset; });
 
-    // Coalesced I/O for this object
+    // Coalesced I/O for this object — submit all kvikio prefetches, then await.
+    // kvikio futures must not outlive obj.kvikio_handle (UB per kvikio docs).
+    // We keep both inside the per-object scope.
     {
+      struct PendingIo {
+        std::future<std::size_t> fut;
+        std::size_t expected_size;
+        bool        crc;
+        std::vector<uint8_t> raw;            // for crc: holds raw block-aligned data
+        std::size_t dest_base;               // pinned-buffer offset to write into
+        uint64_t    content_start;           // for crc: stripped-content origin
+        std::size_t group_start;             // for crc: walk reads to copy stripped bytes
+        std::size_t group_end;
+      };
+
+      std::vector<PendingIo> pending;
+      pending.reserve(obj.reads.size());
+
       std::size_t group_start = 0;
       std::size_t pinned_dest = global_offset;
       uint32_t io_calls       = 0;
 
-      auto flush_group = [&](std::size_t group_end) {
+      auto submit_group = [&](std::size_t group_end) {
         auto& first               = obj.reads[group_start];
         auto& last                = obj.reads[group_end - 1];
         std::size_t group_log_end = last.offset + last.compressed_length;
         std::size_t group_log_len = group_log_end - first.offset;
 
+        PendingIo p;
+        p.crc           = obj.crc;
+        p.dest_base     = pinned_dest;
+        p.group_start   = group_start;
+        p.group_end     = group_end;
+
         if (!obj.crc) {
-          fs.Read(*obj.handle, host_data.data() + pinned_dest, group_log_len, first.offset);
+          p.expected_size = group_log_len;
+          p.fut = obj.kvikio_handle->pread(host_data.data() + pinned_dest,
+                                           group_log_len,
+                                           first.offset,
+                                           /*task_size=*/64 * 1024 * 1024,
+                                           /*gds_threshold=*/kvikio::defaults::gds_threshold(),
+                                           /*sync_default_stream=*/false);
         } else {
           uint64_t first_blk  = first.offset / tae::CRC_CONTENT_SIZE;
           uint64_t last_blk   = (group_log_end - 1) / tae::CRC_CONTENT_SIZE;
@@ -469,38 +507,22 @@ std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_
             phys_end = static_cast<uint64_t>(file_size);
 
           uint64_t raw_size = phys_end - phys_start;
-          std::vector<uint8_t> raw(raw_size);
-          fs.Read(*obj.handle, raw.data(), raw_size, phys_start);
-
-          std::vector<uint8_t> stripped;
-          stripped.reserve((raw_size / tae::CRC_BLOCK_SIZE + 1) * tae::CRC_CONTENT_SIZE);
-          for (uint64_t off = 0; off < raw_size; off += tae::CRC_BLOCK_SIZE) {
-            uint64_t remaining = raw_size - off;
-            if (remaining <= tae::CRC_SIZE) break;
-            uint32_t content_len = static_cast<uint32_t>(
-              std::min(static_cast<uint64_t>(tae::CRC_CONTENT_SIZE), remaining - tae::CRC_SIZE));
-            stripped.insert(stripped.end(),
-                            raw.data() + off + tae::CRC_SIZE,
-                            raw.data() + off + tae::CRC_SIZE + content_len);
-          }
-
-          uint64_t content_start = first_blk * tae::CRC_CONTENT_SIZE;
-          std::size_t dest       = pinned_dest;
-          for (std::size_t j = group_start; j < group_end; j++) {
-            uint64_t local_off = obj.reads[j].offset - content_start;
-            if (local_off + obj.reads[j].compressed_length > stripped.size()) {
-              throw std::runtime_error("CRC coalesced read: offset exceeds stripped range");
-            }
-            std::memcpy(
-              host_data.data() + dest, stripped.data() + local_off, obj.reads[j].compressed_length);
-            dest += obj.reads[j].compressed_length;
-          }
+          p.raw.resize(raw_size);
+          p.expected_size = raw_size;
+          p.content_start = first_blk * tae::CRC_CONTENT_SIZE;
+          p.fut = obj.kvikio_handle->pread(p.raw.data(),
+                                           raw_size,
+                                           phys_start,
+                                           /*task_size=*/64 * 1024 * 1024,
+                                           /*gds_threshold=*/kvikio::defaults::gds_threshold(),
+                                           /*sync_default_stream=*/false);
         }
 
         io_calls++;
         for (std::size_t j = group_start; j < group_end; j++)
           pinned_dest += obj.reads[j].compressed_length;
         group_start = group_end;
+        pending.push_back(std::move(p));
       };
 
       for (std::size_t i = 0; i <= obj.reads.size(); i++) {
@@ -510,8 +532,56 @@ std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_
           (i == 0 || obj.reads[i].offset == obj.reads[i - 1].offset + obj.reads[i - 1].compressed_length);
         bool end_of_group =
           (i == obj.reads.size()) || (!adjacent && i > group_start) || (group_len >= MAX_COALESCE_GROUP);
-        if (end_of_group && i > group_start) { flush_group(i); }
+        if (end_of_group && i > group_start) { submit_group(i); }
       }
+
+      // Await all submissions in order. On the first error we drain remaining
+      // futures (so kvikio worker tasks don't reference freed memory after we
+      // unwind), then rethrow.
+      std::exception_ptr first_error;
+      for (auto& p : pending) {
+        if (first_error) {
+          try { (void)p.fut.get(); } catch (...) { /* swallow during drain */ }
+          continue;
+        }
+        try {
+          std::size_t got = p.fut.get();
+          if (got != p.expected_size) {
+            throw std::runtime_error("kvikio short read for " + obj.file_path +
+                                     ": got " + std::to_string(got) +
+                                     " expected " + std::to_string(p.expected_size));
+          }
+          if (p.crc) {
+            // Strip CRC headers and copy stripped content into pinned buffer.
+            std::vector<uint8_t> stripped;
+            stripped.reserve((p.expected_size / tae::CRC_BLOCK_SIZE + 1) * tae::CRC_CONTENT_SIZE);
+            for (uint64_t off = 0; off < p.expected_size; off += tae::CRC_BLOCK_SIZE) {
+              uint64_t remaining = p.expected_size - off;
+              if (remaining <= tae::CRC_SIZE) break;
+              uint32_t content_len = static_cast<uint32_t>(
+                std::min(static_cast<uint64_t>(tae::CRC_CONTENT_SIZE), remaining - tae::CRC_SIZE));
+              stripped.insert(stripped.end(),
+                              p.raw.data() + off + tae::CRC_SIZE,
+                              p.raw.data() + off + tae::CRC_SIZE + content_len);
+            }
+            std::size_t dest = p.dest_base;
+            for (std::size_t j = p.group_start; j < p.group_end; j++) {
+              uint64_t local_off = obj.reads[j].offset - p.content_start;
+              if (local_off + obj.reads[j].compressed_length > stripped.size()) {
+                throw std::runtime_error("CRC coalesced read: offset exceeds stripped range");
+              }
+              std::memcpy(host_data.data() + dest,
+                          stripped.data() + local_off,
+                          obj.reads[j].compressed_length);
+              dest += obj.reads[j].compressed_length;
+            }
+          }
+        } catch (...) {
+          first_error = std::current_exception();
+        }
+      }
+      if (first_error) std::rethrow_exception(first_error);
+
       SIRIUS_LOG_DEBUG(
         "[tae_scan_task] coalesced {} reads into {} I/O calls (crc={})", obj.reads.size(), io_calls, obj.crc);
     }
