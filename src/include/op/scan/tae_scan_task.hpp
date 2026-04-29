@@ -104,9 +104,15 @@ class tae_scan_task_global_state : public pipeline::sirius_pipeline_task_global_
     return _host_memory_space;
   }
 
-  // Column mapping info extracted from TAEScanBindData
-  [[nodiscard]] std::vector<uint8_t> const& get_column_mo_oids() const { return _all_col_mo_oids; }
-  [[nodiscard]] std::vector<std::string> const& get_column_names() const { return _all_col_names; }
+  // Column mapping info — exposed via the operator's plan.
+  [[nodiscard]] std::vector<std::uint8_t> const& get_column_mo_oids() const
+  {
+    return _scan_op->plan.all_col_mo_oids;
+  }
+  [[nodiscard]] std::vector<std::string> const& get_column_names() const
+  {
+    return _scan_op->plan.all_col_names;
+  }
 
   // Filter expression for GPU pushdown
   [[nodiscard]] std::shared_ptr<gpu_expression_translator::translated_expression>
@@ -117,18 +123,30 @@ class tae_scan_task_global_state : public pipeline::sirius_pipeline_task_global_
 
   [[nodiscard]] std::vector<std::size_t> const& get_post_filter_projection_ids() const
   {
-    return _post_filter_projection_ids;
+    return _scan_op->plan.post_filter_projection_ids;
   }
 
   [[nodiscard]] std::vector<tae::PushedFilter> const& get_pushed_filters() const
   {
-    return _pushed_filters;
+    return _scan_op->plan.pushed_filters;
   }
 
-  [[nodiscard]] int32_t get_sort_column_idx() const { return _sort_column_idx; }
+  [[nodiscard]] std::int32_t get_sort_column_idx() const { return _scan_op->plan.sort_column_idx; }
 
   [[nodiscard]] uint64_t get_scan_task_batch_size() const { return _scan_task_batch_size; }
 
+  // ── Convenience accessor for the operator's canonical scan plan. All the
+  // ── per-column resolution (seqnums, mo oids, decimal width/scale) lives
+  // ── there; compute_task reads from this instead of rebuilding per task.
+  // ── The plan is built in the operator constructor and immutable after.
+  [[nodiscard]] scan::tae_scan_plan const& get_plan() const { return _scan_op->plan; }
+
+  /// @note rebind() resets per-execution counters but does NOT re-derive
+  /// schema/projection/filter state — it assumes the new operator carries
+  /// an equivalent @c scan::tae_scan_plan to the previous one. This matches
+  /// the pre-refactor behavior where @c _all_col_*, @c _pushed_filters,
+  /// and @c _post_filter_projection_ids were also computed once at
+  /// construction and never refreshed.
   void rebind(duckdb::shared_ptr<pipeline::sirius_pipeline> pipeline,
               sirius_physical_gpu_tae_scan* scan_op)
   {
@@ -147,17 +165,10 @@ class tae_scan_task_global_state : public pipeline::sirius_pipeline_task_global_
   std::vector<tae_object_partition> _partitions;
   std::atomic<std::size_t> _next_partition{0};
 
-  // Schema info (from TAEScanBindData)
-  std::vector<std::string> _all_col_names;
-  std::vector<uint8_t> _all_col_mo_oids;
-  int32_t _sort_column_idx = -1;
-
-  // Filter state
+  // Filter state — only the runtime-translated cuDF AST lives here; static
+  // schema / pushed-filter / post-filter-projection state is owned by
+  // @c _scan_op->plan and read through @c get_plan().
   std::shared_ptr<gpu_expression_translator::translated_expression> _translated_filter;
-  std::vector<std::size_t> _post_filter_projection_ids;
-
-  // Zone-map pushed filters (extracted from DuckDB TableFilterSet)
-  std::vector<tae::PushedFilter> _pushed_filters;
 
   uint64_t _scan_task_batch_size;
 };
@@ -177,7 +188,8 @@ class tae_scan_task_local_state : public pipeline::sirius_pipeline_task_local_st
   [[nodiscard]] std::size_t get_task_consumption_basis() const override
   {
     std::size_t total = 0;
-    for (auto& p : _partitions) total += p.size_bytes;
+    for (auto& p : _partitions)
+      total += p.size_bytes;
     return total;
   }
 

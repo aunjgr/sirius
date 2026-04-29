@@ -154,12 +154,15 @@ tae_scan_task_global_state::tae_scan_task_global_state(
     _host_memory_space(host_memory_space),
     _scan_task_batch_size(scan_task_batch_size)
 {
-  // Extract object list and schema from TAEScanBindData
+  // The canonical scan plan (schema metadata, projected columns with
+  // pre-resolved per-column metadata, post-filter projection ids, batch
+  // column map, pushed zone-map filters, deduped filter seqnums) is built
+  // once in the operator constructor. Read all of that through scan_op->plan
+  // — accessors on this class delegate there. The only state we own here
+  // is the per-execution partition queue and the runtime-translated cuDF
+  // AST filter (which the operator hands off as an std::optional that we
+  // upgrade to a shared_ptr for sharing across tasks).
   auto& bind_data = scan_op->bind_data->Cast<tae::TAEScanBindData>();
-
-  _all_col_names   = bind_data.all_col_names;
-  _all_col_mo_oids = bind_data.all_col_mo_oids;
-  _sort_column_idx = bind_data.sort_column_idx;
 
   // Build object partitions
   _partitions.reserve(bind_data.objects.size());
@@ -180,31 +183,6 @@ tae_scan_task_global_state::tae_scan_task_global_state(
   if (scan_op->translated_filter.has_value()) {
     _translated_filter = std::make_shared<gpu_expression_translator::translated_expression>(
       std::move(*scan_op->translated_filter));
-  }
-
-  // Build post-filter projection IDs (same logic as parquet).
-  // Only the first types.size() entries are output columns;
-  // any extra entries in projection_ids are pure filter columns.
-  auto n_output = std::min(scan_op->projection_ids.size(), scan_op->types.size());
-  for (std::size_t i = 0; i < n_output; i++) {
-    _post_filter_projection_ids.push_back(scan_op->projection_ids[i]);
-  }
-
-  // Extract pushed filters from DuckDB TableFilterSet for zone-map pruning.
-  // Each table_filters entry is keyed by column_ids index; we resolve the TAE
-  // seqnum and MO type to build PushedFilter structs that zone map evaluation needs.
-  if (scan_op->table_filters) {
-    auto& col_ids = scan_op->column_ids;
-    for (auto& [col_idx, filter] : scan_op->table_filters->filters) {
-      if (col_idx >= col_ids.size()) continue;
-      auto seqnum    = static_cast<uint16_t>(col_ids[col_idx].GetPrimaryIndex());
-      uint8_t mo_oid = (seqnum < _all_col_mo_oids.size()) ? _all_col_mo_oids[seqnum] : 0;
-      tae::ExtractFilter(*filter, static_cast<uint16_t>(col_idx), seqnum, mo_oid, _pushed_filters);
-    }
-    if (!_pushed_filters.empty()) {
-      SIRIUS_LOG_INFO("[tae_scan_task_global_state] extracted {} zone-map filters",
-                      _pushed_filters.size());
-    }
   }
 
   if (_partitions.empty()) {
@@ -250,46 +228,17 @@ std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_
 {
   auto& g_state = _global_state->cast<tae_scan_task_global_state>();
   auto& l_state = _local_state->cast<tae_scan_task_local_state>();
+  auto& plan    = g_state.get_plan();
 
   auto scan_t0 = std::chrono::high_resolution_clock::now();
 
-  // --- Shared state (computed once, reused across all objects in batch) ---
+  // --- Shared state (sourced from the canonical scan plan) ---
 
-  auto& pushed_filters = g_state.get_pushed_filters();
-  auto sort_column_idx = g_state.get_sort_column_idx();
-  auto& col_ids        = g_state.get_operator().column_ids;
-  auto& proj_ids       = g_state.get_operator().projection_ids;
-  auto& returned_types = g_state.get_operator().returned_types;
-  auto& mo_oids        = g_state.get_column_mo_oids();
-  auto& fs             = duckdb::FileSystem::GetFileSystem(g_state.get_client_context());
-
-  // Resolve projected column seqnums (shared across all objects)
-  std::vector<uint16_t> projected_seqnums;
-  std::vector<uint16_t> projected_col_ids_positions;
-  if (!proj_ids.empty()) {
-    for (auto pid : proj_ids) {
-      if (pid < col_ids.size()) {
-        auto primary_idx = col_ids[pid].GetPrimaryIndex();
-        projected_seqnums.push_back(static_cast<uint16_t>(primary_idx));
-        projected_col_ids_positions.push_back(static_cast<uint16_t>(pid));
-      }
-    }
-  } else {
-    for (std::size_t i = 0; i < col_ids.size(); i++) {
-      auto primary_idx = col_ids[i].GetPrimaryIndex();
-      projected_seqnums.push_back(static_cast<uint16_t>(primary_idx));
-      projected_col_ids_positions.push_back(static_cast<uint16_t>(i));
-    }
-  }
-
-  // Zone-map filter seqnums (shared across all objects)
-  std::vector<uint16_t> filter_seqnums;
-  {
-    std::set<uint16_t> seen;
-    for (auto& pf : pushed_filters) {
-      if (seen.insert(pf.seqnum).second) filter_seqnums.push_back(pf.seqnum);
-    }
-  }
+  auto& pushed_filters    = plan.pushed_filters;
+  auto& filter_seqnums    = plan.filter_seqnums;
+  auto& projected_columns = plan.projected_columns;
+  auto sort_column_idx    = plan.sort_column_idx;
+  auto& fs                = duckdb::FileSystem::GetFileSystem(g_state.get_client_context());
 
   // --- Per-object helper structs ---
 
@@ -302,11 +251,17 @@ std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_
     uint16_t col_ids_position;
     uint32_t block_rows;
     uint32_t null_cnt;
+    // Per-column metadata, pre-resolved by the scan plan. Carried alongside
+    // the chunk so the chunk-build loop in Phase 3 doesn't re-resolve
+    // mo_oids / decimal width / decimal scale per chunk.
+    tae::MOTypeOid type_oid;
+    int32_t width;
+    int32_t scale;
   };
 
   struct ObjectResult {
     std::vector<ReadChunk> reads;
-    uint32_t total_rows         = 0;
+    uint32_t total_rows            = 0;
     std::size_t total_compressed   = 0;
     std::size_t total_uncompressed = 0;
     std::unique_ptr<duckdb::FileHandle> handle;
@@ -319,7 +274,9 @@ std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_
 
   auto process_object = [&](const tae_object_partition& partition) -> std::optional<ObjectResult> {
     SIRIUS_LOG_DEBUG("[tae_scan_task] scanning object: {} ({} rows, {} bytes)",
-                     partition.file_path, partition.rows, partition.size_bytes);
+                     partition.file_path,
+                     partition.rows,
+                     partition.size_bytes);
 
     // Object-level sort-key zone map pruning
     if (!partition.sort_key_zm.empty() && !pushed_filters.empty() && sort_column_idx >= 0) {
@@ -333,8 +290,8 @@ std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_
 
     ObjectResult result;
     result.file_path = partition.file_path;
-    result.handle = fs.OpenFile(partition.file_path, duckdb::FileOpenFlags::FILE_FLAGS_READ);
-    result.crc    = detect_crc_format(fs, *result.handle);
+    result.handle    = fs.OpenFile(partition.file_path, duckdb::FileOpenFlags::FILE_FLAGS_READ);
+    result.crc       = detect_crc_format(fs, *result.handle);
 
     // Read + parse metadata
     auto header_buf = read_bytes(fs, *result.handle, 0, tae::HEADER_SIZE, result.crc);
@@ -357,7 +314,9 @@ std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_
                        static_cast<uint32_t>(meta_buf.size() - tae::IO_ENTRY_HEADER_LEN),
                        obj_meta);
 
-    // Build read plan with per-block zone-map filtering
+    // Build read plan with per-block zone-map filtering. The projection is
+    // walked from the plan's projected_columns vector (pre-resolved at scan
+    // construction); per-block we still iterate to build the per-chunk list.
     uint32_t blocks_pruned = 0;
     for (uint32_t b = 0; b < obj_meta.block_count; b++) {
       auto& blk = obj_meta.blocks[b];
@@ -370,11 +329,14 @@ std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_
             break;
           }
         }
-        if (!passes) { blocks_pruned++; continue; }
+        if (!passes) {
+          blocks_pruned++;
+          continue;
+        }
       }
       result.total_rows += blk.rows;
-      for (std::size_t si = 0; si < projected_seqnums.size(); si++) {
-        auto seq = projected_seqnums[si];
+      for (auto const& pc : projected_columns) {
+        auto seq = pc.seqnum;
         if (seq >= blk.columns.size()) continue;
         auto& col = blk.columns[seq];
         auto& ext = col.location;
@@ -383,15 +345,20 @@ std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_
                                 ext.origin_size,
                                 ext.alg,
                                 seq,
-                                projected_col_ids_positions[si],
+                                pc.col_ids_position,
                                 blk.rows,
-                                col.null_cnt});
+                                col.null_cnt,
+                                pc.type_oid,
+                                pc.width,
+                                pc.scale});
       }
     }
 
     if (blocks_pruned > 0) {
       SIRIUS_LOG_DEBUG("[tae_scan_task] zone-map pruned {}/{} blocks for {}",
-                       blocks_pruned, obj_meta.block_count, partition.file_path);
+                       blocks_pruned,
+                       obj_meta.block_count,
+                       partition.file_path);
     }
 
     if (result.reads.empty() || result.total_rows == 0) {
@@ -430,7 +397,9 @@ std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_
   }
 
   SIRIUS_LOG_TRACE("[tae_scan_task] batch: {} objects ({} scanned), {} cumulative compressed bytes",
-                   objects.size(), objects_scanned, cumulative_compressed);
+                   objects.size(),
+                   objects_scanned,
+                   cumulative_compressed);
 
   // --- Phase 2: Compute combined totals ---
 
@@ -452,8 +421,9 @@ std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_
 
   for (auto& obj : objects) {
     // Sort reads by file offset for sequential I/O
-    std::sort(obj.reads.begin(), obj.reads.end(),
-              [](const ReadChunk& a, const ReadChunk& b) { return a.offset < b.offset; });
+    std::sort(obj.reads.begin(), obj.reads.end(), [](const ReadChunk& a, const ReadChunk& b) {
+      return a.offset < b.offset;
+    });
 
     // Coalesced I/O for this object — submit all kvikio prefetches, then await.
     // kvikio futures must not outlive obj.kvikio_handle (UB per kvikio docs).
@@ -462,11 +432,11 @@ std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_
       struct PendingIo {
         std::future<std::size_t> fut;
         std::size_t expected_size;
-        bool        crc;
-        std::vector<uint8_t> raw;            // for crc: holds raw block-aligned data
-        std::size_t dest_base;               // pinned-buffer offset to write into
-        uint64_t    content_start;           // for crc: stripped-content origin
-        std::size_t group_start;             // for crc: walk reads to copy stripped bytes
+        bool crc;
+        std::vector<uint8_t> raw;  // for crc: holds raw block-aligned data
+        std::size_t dest_base;     // pinned-buffer offset to write into
+        uint64_t content_start;    // for crc: stripped-content origin
+        std::size_t group_start;   // for crc: walk reads to copy stripped bytes
         std::size_t group_end;
       };
 
@@ -484,14 +454,14 @@ std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_
         std::size_t group_log_len = group_log_end - first.offset;
 
         PendingIo p;
-        p.crc           = obj.crc;
-        p.dest_base     = pinned_dest;
-        p.group_start   = group_start;
-        p.group_end     = group_end;
+        p.crc         = obj.crc;
+        p.dest_base   = pinned_dest;
+        p.group_start = group_start;
+        p.group_end   = group_end;
 
         if (!obj.crc) {
           p.expected_size = group_log_len;
-          p.fut = obj.kvikio_handle->pread(host_data.data() + pinned_dest,
+          p.fut           = obj.kvikio_handle->pread(host_data.data() + pinned_dest,
                                            group_log_len,
                                            first.offset,
                                            /*task_size=*/64 * 1024 * 1024,
@@ -510,7 +480,7 @@ std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_
           p.raw.resize(raw_size);
           p.expected_size = raw_size;
           p.content_start = first_blk * tae::CRC_CONTENT_SIZE;
-          p.fut = obj.kvikio_handle->pread(p.raw.data(),
+          p.fut           = obj.kvikio_handle->pread(p.raw.data(),
                                            raw_size,
                                            phys_start,
                                            /*task_size=*/64 * 1024 * 1024,
@@ -527,11 +497,11 @@ std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_
 
       for (std::size_t i = 0; i <= obj.reads.size(); i++) {
         std::size_t group_len = i - group_start;
-        bool adjacent =
-          (i < obj.reads.size()) &&
-          (i == 0 || obj.reads[i].offset == obj.reads[i - 1].offset + obj.reads[i - 1].compressed_length);
-        bool end_of_group =
-          (i == obj.reads.size()) || (!adjacent && i > group_start) || (group_len >= MAX_COALESCE_GROUP);
+        bool adjacent         = (i < obj.reads.size()) &&
+                        (i == 0 || obj.reads[i].offset ==
+                                     obj.reads[i - 1].offset + obj.reads[i - 1].compressed_length);
+        bool end_of_group = (i == obj.reads.size()) || (!adjacent && i > group_start) ||
+                            (group_len >= MAX_COALESCE_GROUP);
         if (end_of_group && i > group_start) { submit_group(i); }
       }
 
@@ -541,15 +511,18 @@ std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_
       std::exception_ptr first_error;
       for (auto& p : pending) {
         if (first_error) {
-          try { (void)p.fut.get(); } catch (...) { /* swallow during drain */ }
+          try {
+            (void)p.fut.get();
+          } catch (...) { /* swallow during drain */
+          }
           continue;
         }
         try {
           std::size_t got = p.fut.get();
           if (got != p.expected_size) {
-            throw std::runtime_error("kvikio short read for " + obj.file_path +
-                                     ": got " + std::to_string(got) +
-                                     " expected " + std::to_string(p.expected_size));
+            throw std::runtime_error("kvikio short read for " + obj.file_path + ": got " +
+                                     std::to_string(got) + " expected " +
+                                     std::to_string(p.expected_size));
           }
           if (p.crc) {
             // Strip CRC headers and copy stripped content into pinned buffer.
@@ -582,25 +555,21 @@ std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_
       }
       if (first_error) std::rethrow_exception(first_error);
 
-      SIRIUS_LOG_DEBUG(
-        "[tae_scan_task] coalesced {} reads into {} I/O calls (crc={})", obj.reads.size(), io_calls, obj.crc);
+      SIRIUS_LOG_DEBUG("[tae_scan_task] coalesced {} reads into {} I/O calls (crc={})",
+                       obj.reads.size(),
+                       io_calls,
+                       obj.crc);
     }
 
-    // Build chunk metadata for this object
+    // Build chunk metadata for this object. The per-column metadata
+    // (type oid, decimal width/scale) was pre-resolved by the scan plan
+    // and carried on each ReadChunk, so this loop is a straight copy.
     for (auto& r : obj.reads) {
-      tae::MOTypeOid type_oid = tae::MO_T_any;
-      int32_t width = 0, scale = 0;
-      if (r.seqnum < mo_oids.size()) { type_oid = static_cast<tae::MOTypeOid>(mo_oids[r.seqnum]); }
-      if (r.seqnum < returned_types.size() && returned_types[r.seqnum].is_decimal()) {
-        width = static_cast<int32_t>(returned_types[r.seqnum].decimal_precision());
-        scale = static_cast<int32_t>(returned_types[r.seqnum].decimal_scale());
-      }
-
       host_tae_representation::column_chunk_info chunk;
       chunk.column_idx = r.col_ids_position;
-      chunk.type_oid   = type_oid;
-      chunk.width      = width;
-      chunk.scale      = scale;
+      chunk.type_oid   = r.type_oid;
+      chunk.width      = r.width;
+      chunk.scale      = r.scale;
       chunk.extent =
         tae::Extent{r.alg, static_cast<uint32_t>(r.offset), r.compressed_length, r.origin_size};
       chunk.null_cnt      = r.null_cnt;
@@ -628,13 +597,17 @@ std::unique_ptr<op::operator_data> tae_scan_task::compute_task(rmm::cuda_stream_
 
   auto batch = std::make_shared<cucascade::data_batch>(get_next_batch_id(), std::move(repr));
 
-  SIRIUS_LOG_TRACE("[tae_scan_task] produced batch: {} objects, {} rows, {} compressed, {} uncompressed",
-                   objects.size(), total_rows, total_compressed, total_uncompressed);
+  SIRIUS_LOG_TRACE(
+    "[tae_scan_task] produced batch: {} objects, {} rows, {} compressed, {} uncompressed",
+    objects.size(),
+    total_rows,
+    total_compressed,
+    total_uncompressed);
 
   auto scan_t1 = std::chrono::high_resolution_clock::now();
   auto scan_ms = std::chrono::duration<double, std::milli>(scan_t1 - scan_t0).count();
-  SIRIUS_LOG_TRACE("[tae_scan_task] scan I/O total: {:.2f} ms ({} bytes pinned)",
-                   scan_ms, global_offset);
+  SIRIUS_LOG_TRACE(
+    "[tae_scan_task] scan I/O total: {:.2f} ms ({} bytes pinned)", scan_ms, global_offset);
 
   return std::make_unique<op::pipelineable_operator_data>(
     std::vector<std::shared_ptr<cucascade::data_batch>>{std::move(batch)});

@@ -19,8 +19,11 @@
 #include "expression_executor/gpu_expression_translator_internal.hpp"
 #include "log/logging.hpp"
 #include "op/scan/scan_utils.hpp"
+#include "op/scan/tae_scan_plan.hpp"
 #include "op/sirius_physical_parquet_scan.hpp"
 #include "op/sirius_physical_table_scan.hpp"
+#include "sirius/exception.hpp"
+#include "tae_scanner.hpp"
 
 namespace sirius {
 namespace op {
@@ -70,10 +73,21 @@ sirius_physical_gpu_tae_scan::sirius_physical_gpu_tae_scan(
     parameters(std::move(parameters_p)),
     virtual_columns(std::move(virtual_columns_p))
 {
+  // Build the canonical scan plan once. All downstream consumers — the AST
+  // filter translation below, the tae_scan_task_global_state ctor, and the
+  // per-task compute_task — read from this struct instead of re-deriving
+  // the same data from the operator's parallel vectors.
+  if (!bind_data) {
+    throw sirius::internal_exception(
+      "[sirius_physical_gpu_tae_scan] missing bind_data; cannot build scan plan");
+  }
+  auto& tae_bind = bind_data->Cast<tae::TAEScanBindData>();
+  plan           = scan::build_tae_scan_plan(
+    tae_bind, column_ids, projection_ids, returned_types, this->types.size(), table_filters.get());
+
   if (table_filters && !table_filters->filters.empty()) {
-    auto batch_column_map  = build_batch_column_map(projection_ids, column_ids.size());
     auto duckdb_expression = convert_table_filters_to_expression(
-      *table_filters, column_ids, returned_types, batch_column_map);
+      *table_filters, column_ids, returned_types, plan.batch_column_map);
     if (duckdb_expression) {
       gpu_expression_translator translator(rmm::cuda_stream_default,
                                            cudf::get_current_device_resource_ref());

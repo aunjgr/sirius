@@ -68,8 +68,8 @@ endif()
 find_package(cudf REQUIRED CONFIG)
 find_package(kvikio CONFIG REQUIRED)
 # kvikio pulls in BS::thread_pool whose INTERFACE_COMPILE_FEATURES include
-# `cuda_std_17`. That feature propagates transitively into duckdb_static
-# (a non-CUDA target), causing CMake to fail with "No known features for CUDA
+# `cuda_std_17`. That feature propagates transitively into duckdb_static (a
+# non-CUDA target), causing CMake to fail with "No known features for CUDA
 # compiler". Strip `cuda_std_17` here; sirius CUDA targets set CUDA_STANDARD
 # explicitly already.
 foreach(_bs_target BS::thread_pool rapids_bs_thread_pool)
@@ -77,8 +77,8 @@ foreach(_bs_target BS::thread_pool rapids_bs_thread_pool)
     get_target_property(_features ${_bs_target} INTERFACE_COMPILE_FEATURES)
     if(_features)
       list(REMOVE_ITEM _features cuda_std_17)
-      set_target_properties(${_bs_target} PROPERTIES
-        INTERFACE_COMPILE_FEATURES "${_features}")
+      set_target_properties(${_bs_target} PROPERTIES INTERFACE_COMPILE_FEATURES
+                                                     "${_features}")
     endif()
   endif()
 endforeach()
@@ -204,6 +204,7 @@ set(EXTENSION_SOURCES
     src/op/scan/scan_utils.cpp
     src/op/scan/sirius_parquet_metadata_scan_operator.cpp
     src/op/scan/sirius_gpu_parquet_scan_operator.cpp
+    src/op/scan/tae_scan_plan.cpp
     src/op/scan/tae_scan_task.cpp
     src/op/sirius_physical_column_data_scan.cpp
     src/op/sirius_physical_cpu_source.cpp
@@ -277,10 +278,8 @@ set(EXTENSION_SOURCES
 # Legacy Sirius — all legacy-specific config lives in src/legacy/CMakeLists.txt.
 # Deleting src/legacy/ cleanly removes legacy build support.
 set(CUDA_SOURCES
-    src/op/scan/equality_delete_mask.cu
-    src/cuda/tae/tae_decode_fixed.cu
-    src/cuda/tae/tae_decode_varchar.cu
-    src/cuda/tae/tae_null_mask.cu)
+    src/op/scan/equality_delete_mask.cu src/cuda/tae/tae_decode_fixed.cu
+    src/cuda/tae/tae_decode_varchar.cu src/cuda/tae/tae_null_mask.cu)
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/legacy/CMakeLists.txt")
   add_subdirectory(src/legacy)
   list(APPEND EXTENSION_SOURCES ${SIRIUS_LEGACY_SOURCES}

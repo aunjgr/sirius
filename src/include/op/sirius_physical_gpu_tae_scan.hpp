@@ -23,6 +23,7 @@
 #include "duckdb/storage/data_table.hpp"
 #include "expression_executor/gpu_expression_translator_internal.hpp"
 #include "helper/type_conversions.hpp"
+#include "op/scan/tae_scan_plan.hpp"
 #include "op/sirius_physical_operator.hpp"
 #include "op/sirius_physical_table_scan.hpp"
 
@@ -91,6 +92,14 @@ class sirius_physical_gpu_tae_scan : public sirius_physical_operator {
 
   //! Translated filter for GPU pushdown
   std::optional<gpu_expression_translator::translated_expression> translated_filter;
+
+  //! Canonical scan plan: P-indexed schema metadata, projected columns in
+  //! projection order with pre-resolved per-column metadata, post-filter
+  //! projection ids, the C→C-sorted-batch-position map, pushed zone-map
+  //! filters, and deduped filter seqnums. Built once in the constructor;
+  //! all downstream consumers (operator-side filter translation, global
+  //! state, per-task compute_task) read from this struct.
+  scan::tae_scan_plan plan;
 
  public:
   bool is_source() const override { return true; }
