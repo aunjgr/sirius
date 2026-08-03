@@ -17,7 +17,10 @@
 #pragma once
 
 #include "duckdb/main/client_context.hpp"
+#include "execution/sirius_execution_evidence.hpp"
 #include "sirius_engine.hpp"
+
+#include <memory>
 
 namespace sirius {
 
@@ -61,13 +64,16 @@ struct sirius_active_query_context {
 
 class sirius_interface {
  public:
-  sirius_interface(duckdb::ClientContext& client_context);
+  explicit sirius_interface(duckdb::ClientContext& client_context,
+                            std::shared_ptr<execution_evidence> evidence = nullptr);
   //! The client context
   duckdb::ClientContext& client_context;
   //! The currently active query context
   duckdb::unique_ptr<sirius_active_query_context> sirius_active_query;
   //! The current query progress
   duckdb::QueryProgress query_progress;
+  //! Query-scoped backend proof. The request boundary owns terminal completion.
+  std::shared_ptr<execution_evidence> evidence;
   //! Check if the pending query result is executable
   void check_executable_internal(duckdb::PendingQueryResult& pending);
   //! Fetch the result from the pending query result

@@ -38,8 +38,9 @@ void bind_prepared_statement_parameters(duckdb::PreparedStatementData& statement
   statement.Bind(std::move(owned_values));
 }
 
-sirius_interface::sirius_interface(duckdb::ClientContext& client_context)
-  : client_context(client_context) {};
+sirius_interface::sirius_interface(duckdb::ClientContext& client_context,
+                                   std::shared_ptr<execution_evidence> evidence)
+  : client_context(client_context), evidence(std::move(evidence)) {};
 
 void sirius_interface::sirius_process_error(duckdb::ErrorData& error,
                                             const duckdb::string& query) const
@@ -192,6 +193,7 @@ duckdb::unique_ptr<duckdb::QueryResult> sirius_interface::sirius_execute_pending
   auto& engine = get_sirius_engine();
   try {
     SIRIUS_LOG_DEBUG("Executing sirius_engine");
+    if (evidence) { (void)evidence->mark_backend_started(execution_backend::SIRIUS_GPU); }
     auto exec_t0 = std::chrono::high_resolution_clock::now();
     engine.execute();
     auto exec_t1 = std::chrono::high_resolution_clock::now();
