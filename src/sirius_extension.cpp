@@ -81,6 +81,7 @@ unique_ptr<QueryResult> run_internal_cpu_fallback_query(ClientContext& context,
 struct SiriusTableFunctionData : public TableFunctionData {
   SiriusTableFunctionData() = default;
   shared_ptr<::sirius::sirius_prepared_statement_data> gpu_prepared;
+  std::shared_ptr<::sirius::execution_evidence> execution_evidence;
   unique_ptr<QueryResult> res;
   unique_ptr<Connection> conn;
   unique_ptr<::sirius::sirius_interface> sirius_iface;
@@ -408,7 +409,9 @@ unique_ptr<FunctionData> SiriusExtension::GPUExecutionBind(ClientContext& contex
   result->conn             = make_uniq<Connection>(*context.db);
   result->query            = input.inputs[0].ToString();
   result->enable_optimizer = true;
-  result->sirius_iface     = make_uniq<::sirius::sirius_interface>(context);
+  result->execution_evidence =
+    std::make_shared<::sirius::execution_evidence>(::sirius::execution_backend::SIRIUS_GPU);
+  result->sirius_iface = make_uniq<::sirius::sirius_interface>(context, result->execution_evidence);
   if (input.inputs[0].IsNull()) {
     throw BinderException("gpu_execution cannot be called with a NULL parameter");
   }
@@ -465,26 +468,39 @@ void SiriusExtension::GPUExecutionFunction(ClientContext& context,
 
   if (!data.res) {
     auto start = std::chrono::high_resolution_clock::now();
-    if (data.plan_error) {
-      printf(
-        "=============================================\nError in SiriusExecuteQuery, fallback to "
-        "DuckDB\n=============================================\n");
-      data.res = run_internal_cpu_fallback_query(context, *data.conn, data.query);
-    } else {
-      data.res =
-        data.sirius_iface->sirius_execute_query(context, data.query, data.gpu_prepared, {});
-      if (data.res->HasError()) {
-        if (Config::ENABLE_DUCKDB_FALLBACK) {
-          SIRIUS_LOG_ERROR("SiriusExecuteQuery error: {}", data.res->GetError());
-          printf(
-            "=============================================\nError in SiriusExecuteQuery, fallback "
-            "to DuckDB\n=============================================\n");
-          data.res = run_internal_cpu_fallback_query(context, *data.conn, data.query);
-        } else {
-          throw std::runtime_error("SiriusExecuteQuery error: " + data.res->GetError());
-          return;
+    try {
+      if (data.plan_error) {
+        printf(
+          "=============================================\nError in SiriusExecuteQuery, fallback to "
+          "DuckDB\n=============================================\n");
+        (void)data.execution_evidence->mark_backend_started(
+          ::sirius::execution_backend::DUCKDB_CPU);
+        data.res = run_internal_cpu_fallback_query(context, *data.conn, data.query);
+      } else {
+        data.res =
+          data.sirius_iface->sirius_execute_query(context, data.query, data.gpu_prepared, {});
+        if (data.res->HasError()) {
+          if (Config::ENABLE_DUCKDB_FALLBACK) {
+            SIRIUS_LOG_ERROR("SiriusExecuteQuery error: {}", data.res->GetError());
+            printf(
+              "=============================================\nError in SiriusExecuteQuery, "
+              "fallback "
+              "to DuckDB\n=============================================\n");
+            (void)data.execution_evidence->mark_backend_started(
+              ::sirius::execution_backend::DUCKDB_CPU);
+            data.res = run_internal_cpu_fallback_query(context, *data.conn, data.query);
+          } else {
+            (void)data.execution_evidence->finish(::sirius::execution_outcome::FAILED);
+            throw std::runtime_error("SiriusExecuteQuery error: " + data.res->GetError());
+          }
         }
       }
+      auto outcome = data.res && !data.res->HasError() ? ::sirius::execution_outcome::SUCCEEDED
+                                                       : ::sirius::execution_outcome::FAILED;
+      (void)data.execution_evidence->finish(outcome);
+    } catch (...) {
+      (void)data.execution_evidence->finish(::sirius::execution_outcome::FAILED);
+      throw;
     }
     auto end      = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
