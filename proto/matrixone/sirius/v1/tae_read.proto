@@ -1,0 +1,22 @@
+// Copyright 2026 Sirius Contributors.
+// SPDX-License-Identifier: Apache-2.0
+
+syntax = "proto3";
+
+package matrixone.sirius.v1;
+
+// Query-scoped capability for a snapshot-correct MatrixOne TAE read.
+// Object locations and credentials are deliberately absent.
+message TaeRead {
+  uint32 protocol_version = 1;
+  uint64 feature_bits = 2;
+  bytes read_ref = 3;
+  bytes query_id = 4;
+  uint64 account_id = 5;
+  uint64 table_id = 6;
+  bytes snapshot_ts = 7;
+  bytes schema_digest = 8;
+  bytes manifest_sha256 = 9;
+  bytes capability_hash = 10;
+  uint64 expires_at_unix_ms = 11;
+}

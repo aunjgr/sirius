@@ -237,6 +237,7 @@ set(EXTENSION_SOURCES
     src/op/sirius_physical_table_scan.cpp
     src/op/sirius_physical_top_n.cpp
     src/op/sirius_physical_ungrouped_aggregate.cpp
+    src/offload/substrait_execution.cpp
     src/parallel/task_executor.cpp
     src/pipeline/gpu_pipeline_executor.cpp
     src/pipeline/gpu_pipeline_task.cpp
@@ -247,6 +248,7 @@ set(EXTENSION_SOURCES
     src/pipeline/sirius_plan_printer.cpp
     src/pipeline/task_request.cpp
     src/planner/query.cpp
+    src/planner/sirius_prepare.cpp
     src/planner/sirius_physical_plan_generator.cpp
     src/planner/sirius_plan_aggregate.cpp
     src/planner/sirius_plan_column_data_get.cpp
@@ -319,6 +321,9 @@ foreach(_target sirius_extension sirius_loadable_extension)
     ${_target}
     PRIVATE
       $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/include>
+      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/substrait/src/include>
+      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/substrait/third_party>
+      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/substrait/third_party/substrait>
       $<$<BOOL:${SIRIUS_LEGACY_INCLUDE_DIR}>:$<BUILD_INTERFACE:${SIRIUS_LEGACY_INCLUDE_DIR}>>
       # tae-scanner headers needed by tae_scan_task.cpp for TAEScanBindData
       $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../tae-scanner/include>)
@@ -342,6 +347,8 @@ foreach(_target sirius_extension sirius_loadable_extension)
     kvikio::kvikio
     lz4
     nvcomp)
+
+  target_link_libraries(${_target} substrait_extension)
 
   add_dependencies(${_target} duckdb_static)
 endforeach()
@@ -391,6 +398,7 @@ set(TEST_SOURCES
     test/cpp/integration/test_transparent_execution.cpp
     test/cpp/memory/test_host_table_utils.cpp
     test/cpp/memory/test_multiple_blocks_allocation_accessor.cpp
+    test/cpp/offload/test_substrait_execution.cpp
     test/cpp/operator/aggregate/test_gpu_merge_impl.cpp
     test/cpp/operator/aggregate/test_physical_grouped_aggregate.cpp
     test/cpp/operator/aggregate/test_physical_grouped_aggregate_count_distinct.cpp
@@ -439,6 +447,10 @@ add_executable(
   test/cpp/exec/execution_evidence_unittest.cpp
   test/cpp/exec/test_execution_evidence.cpp
   src/execution/sirius_execution_evidence.cpp)
+add_executable(
+  sirius_substrait_contract_unittest
+  test/cpp/exec/execution_evidence_unittest.cpp
+  test/cpp/offload/test_substrait_execution.cpp)
 target_include_directories(
   sirius_execution_evidence_unittest
   PRIVATE $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/third_party/catch>
@@ -450,7 +462,29 @@ set_target_properties(
              CXX_STANDARD_REQUIRED ON
              RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/test/cpp")
 
+target_include_directories(
+  sirius_substrait_contract_unittest
+  PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/third_party/catch>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/substrait/src/include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/substrait/third_party>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/substrait/third_party/substrait>)
+target_link_libraries(sirius_substrait_contract_unittest sirius_extension duckdb_static)
+link_extension_libraries(sirius_substrait_contract_unittest "")
+target_link_options(sirius_substrait_contract_unittest
+                    PRIVATE "LINKER:--allow-multiple-definition")
+set_target_properties(
+  sirius_substrait_contract_unittest
+  PROPERTIES CXX_STANDARD 20
+             CXX_STANDARD_REQUIRED ON
+             RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/test/cpp")
+
 if(VCPKG_BUILD)
+  set_target_properties(sirius_substrait_contract_unittest
+                        PROPERTIES NO_SYSTEM_FROM_IMPORTED ON)
+  target_include_directories(sirius_substrait_contract_unittest BEFORE
+                             PRIVATE ${_VCPKG_INC})
   set_target_properties(sirius_unittest PROPERTIES NO_SYSTEM_FROM_IMPORTED ON)
   target_include_directories(sirius_unittest BEFORE PRIVATE ${_VCPKG_INC})
 endif()
@@ -461,6 +495,9 @@ target_include_directories(
     $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/third_party/catch>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/test/cpp>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/substrait/src/include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/substrait/third_party>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/substrait/third_party/substrait>
     $<$<BOOL:${SIRIUS_LEGACY_INCLUDE_DIR}>:$<BUILD_INTERFACE:${SIRIUS_LEGACY_INCLUDE_DIR}>>
 )
 

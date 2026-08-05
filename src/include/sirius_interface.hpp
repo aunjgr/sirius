@@ -20,6 +20,7 @@
 #include "execution/sirius_execution_evidence.hpp"
 #include "sirius_engine.hpp"
 
+#include <functional>
 #include <memory>
 
 namespace sirius {
@@ -108,6 +109,11 @@ class sirius_interface {
     const duckdb::string& query,
     duckdb::shared_ptr<sirius_prepared_statement_data>& statement_p,
     const duckdb::PendingQueryParameters& parameters);
+  //! Execute directly into a serialized, synchronous result callback.
+  void sirius_execute_streaming(duckdb::ClientContext& context,
+                                const duckdb::string& query,
+                                duckdb::shared_ptr<sirius_prepared_statement_data> statement,
+                                std::function<bool(const duckdb::DataChunk&)> callback);
   //! Execute the pending query result
   duckdb::unique_ptr<duckdb::QueryResult> sirius_execute_pending_query_result(
     duckdb::PendingQueryResult& pending);
