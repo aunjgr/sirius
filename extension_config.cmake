@@ -17,6 +17,17 @@
 # This file is included by DuckDB's build system. It specifies which extension
 # to load
 
+# Current Sirius TAE scan operators share filter extraction and zone-map
+# evaluation with the sidecar's tae_scanner extension.
+duckdb_extension_load(tae_scanner SOURCE_DIR
+                      ${CMAKE_CURRENT_LIST_DIR}/../tae-scanner INCLUDE_DIR
+                      ${CMAKE_CURRENT_LIST_DIR}/../tae-scanner/include)
+
+# Sirius reuses DuckDB's standard Substrait importer after its strict offload
+# validation/rewrite boundary.
+duckdb_extension_load(substrait SOURCE_DIR
+                      ${CMAKE_CURRENT_LIST_DIR}/substrait)
+
 # Extension from this repo
 duckdb_extension_load(sirius SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR} LOAD_TESTS
                       EXTENSION_VERSION dev)

@@ -46,6 +46,68 @@
 namespace sirius {
 namespace op {
 
+namespace {
+
+template <typename VISITOR>
+void visit_result_chunks(duckdb::ClientContext& client_ctx,
+                         const duckdb::vector<sirius::logical_type>& types,
+                         const operator_data& input_data,
+                         rmm::cuda_stream_view stream,
+                         VISITOR&& visitor)
+{
+  auto& pipelineable_input      = dynamic_cast<const pipelineable_operator_data&>(input_data);
+  const auto& input_batches     = pipelineable_input.get_data_batches();
+  using host_table_chunk_reader = ::sirius::op::result::host_table_chunk_reader;
+
+  for (const auto& input_batch : input_batches) {
+    auto* data = input_batch->get_data();
+    std::shared_ptr<cucascade::data_batch> clone_batch;
+    if (!data) { throw invalid_input_exception("result collector received a batch without data"); }
+    if (data->get_size_in_bytes() == 0) { continue; }
+
+    if (data->get_current_tier() == cucascade::memory::Tier::GPU) {
+      auto sirius_ctx = client_ctx.registered_state->Get<duckdb::SiriusContext>("sirius_state");
+      if (!sirius_ctx) {
+        throw internal_exception("result collector requires an initialized Sirius context");
+      }
+      auto& memory_mgr = sirius_ctx->get_memory_manager();
+      auto reservation = memory_mgr.request_reservation(
+        cucascade::memory::any_memory_space_in_tier{cucascade::memory::Tier::HOST},
+        data->get_size_in_bytes());
+      if (!reservation) {
+        throw internal_exception("result collector failed to reserve host memory");
+      }
+
+      auto& registry      = sirius::converter_registry::get();
+      auto& mem_space     = reservation->get_memory_space();
+      auto& data_repo_mgr = sirius_ctx->get_data_repository_manager();
+      clone_batch         = input_batch->clone(data_repo_mgr.get_next_data_batch_id(), stream);
+      clone_batch->convert_to<cucascade::host_data_representation>(registry, &mem_space, stream);
+      data = clone_batch->get_data();
+    } else if (data->get_current_tier() != cucascade::memory::Tier::HOST) {
+      throw invalid_input_exception("result collector only accepts HOST or GPU data");
+    }
+
+    auto* host_data = dynamic_cast<cucascade::host_data_representation*>(data);
+    if (!host_data) {
+      throw invalid_input_exception("result collector expected host_data_representation");
+    }
+    auto const* host_table = host_data->get_host_table().get();
+    if (!host_table || !host_table->allocation) {
+      throw invalid_input_exception("result collector received invalid host table storage");
+    }
+
+    host_table_chunk_reader chunk_reader(client_ctx, *host_data, types);
+    while (true) {
+      duckdb::DataChunk chunk;
+      if (!chunk_reader.get_next_chunk(chunk)) { break; }
+      visitor(chunk);
+    }
+  }
+}
+
+}  // namespace
+
 sirius_physical_result_collector::sirius_physical_result_collector(
   ::sirius::sirius_prepared_statement_data& data)
   : sirius_physical_operator(SiriusPhysicalOperatorType::RESULT_COLLECTOR,
@@ -116,92 +178,40 @@ void sirius_physical_materialized_collector::sink(const operator_data& input_dat
                                                   rmm::cuda_stream_view stream)
 {
   nvtx3::scoped_range nvtx_range{"sirius_physical_materialized_collector::sink"};
-  auto& pipelineable_input      = dynamic_cast<const pipelineable_operator_data&>(input_data);
-  const auto& input_batches     = pipelineable_input.get_data_batches();
-  using host_table_chunk_reader = ::sirius::op::result::host_table_chunk_reader;
-
-  if (input_batches.empty()) {
-    return;  // todo(kevin) we should handle this case properly
-  }
-
-  auto sink_single_batch = [this,
-                            stream](std::shared_ptr<cucascade::data_batch> const& input_batch) {
-    auto* data = input_batch->get_data();
-    std::shared_ptr<cucascade::data_batch> clone_batch;
-    if (!data) {
-      throw invalid_input_exception(
-        "[GPUPhysicalMaterializedCollector] data_batch has no data representation");
+  visit_result_chunks(_client_ctx, types, input_data, stream, [this](duckdb::DataChunk& chunk) {
+    std::lock_guard<std::mutex> guard(lock);
+    if (!result_collection) {
+      result_collection =
+        duckdb::make_uniq<duckdb::ColumnDataCollection>(_client_ctx, sirius::to_duckdb_vec(types));
     }
-    if (data->get_size_in_bytes() == 0) { return; }
+    result_collection->Append(chunk);
+  });
+}
 
-    // If data is in GPU tier, convert to HOST tier first
-    if (data->get_current_tier() == cucascade::memory::Tier::GPU) {
-      // Make the HOST memory reservation
-      auto sirius_ctx  = _client_ctx.registered_state->Get<duckdb::SiriusContext>("sirius_state");
-      auto& memory_mgr = sirius_ctx->get_memory_manager();
-      /// TODO: Find the closest memory space, not just any memory space, in HOST tier
-      auto reservation = memory_mgr.request_reservation(
-        cucascade::memory::any_memory_space_in_tier{cucascade::memory::Tier::HOST},
-        data->get_size_in_bytes());
-      if (!reservation) {
-        throw internal_exception(
-          "[GPUPhysicalMaterializedCollector] Failed to reserve host memory for result collection");
-      }
+sirius_physical_streaming_collector::sirius_physical_streaming_collector(
+  ::sirius::sirius_prepared_statement_data& data,
+  duckdb::ClientContext& client_ctx,
+  result_chunk_callback callback)
+  : sirius_physical_result_collector(data), client_ctx_(client_ctx), callback_(std::move(callback))
+{
+  if (!callback_) { throw invalid_input_exception("streaming result callback is required"); }
+}
 
-      // Convert to host representation
-      auto& registry      = sirius::converter_registry::get();
-      auto& mem_space     = reservation->get_memory_space();
-      auto& data_repo_mgr = sirius_ctx->get_data_repository_manager();
-      auto next_batch_id  = data_repo_mgr.get_next_data_batch_id();
-      clone_batch         = input_batch->clone(next_batch_id, stream);
-      // todo (bobbi) pass stream to sink
-      clone_batch->convert_to<cucascade::host_data_representation>(registry, &mem_space, stream);
-      data = clone_batch->get_data();
-    } else if (data->get_current_tier() != cucascade::memory::Tier::HOST) {
-      // Data must be in HOST tier (i.e., cannot currently reside in DISK tier)
-      throw invalid_input_exception(
-        "[GPUPhysicalMaterializedCollector] Expected host_data_representation in HOST tier");
+duckdb::unique_ptr<duckdb::QueryResult> sirius_physical_streaming_collector::get_result()
+{
+  throw internal_exception("streaming result collector cannot materialize a QueryResult");
+}
+
+void sirius_physical_streaming_collector::sink(const operator_data& input_data,
+                                               rmm::cuda_stream_view stream)
+{
+  nvtx3::scoped_range nvtx_range{"sirius_physical_streaming_collector::sink"};
+  std::lock_guard<std::mutex> guard(lock);
+  visit_result_chunks(client_ctx_, types, input_data, stream, [this](duckdb::DataChunk& chunk) {
+    if (!callback_(chunk)) {
+      throw invalid_input_exception("streaming result consumer cancelled execution");
     }
-
-    // Only accepting host_data_representation for now
-    assert(dynamic_cast<cucascade::host_data_representation*>(data) != nullptr);
-
-    // Push chunks to result collection
-    auto const& host_table = data->cast<cucascade::host_data_representation>();
-    // host_table_chunk_reader expects get_host_table() and ->allocation to be non-null;
-    // otherwise it will dereference a null unique_ptr (e.g. in column_reader::initialize).
-    auto const* ht = host_table.get_host_table().get();
-    if (!ht) {
-      throw invalid_input_exception(
-        "[GPUPhysicalMaterializedCollector] host_data_representation has null "
-        "get_host_table()");
-    }
-    if (!ht->allocation) {
-      throw invalid_input_exception(
-        "[GPUPhysicalMaterializedCollector] host_table allocation is null (cannot read chunks)");
-    }
-    host_table_chunk_reader chunk_reader(_client_ctx, host_table, types);
-
-    // Push chunks to result collection
-    while (true) {
-      // TODO(amin): it is fishy that append take a mutable reference to the chunk reader and we are
-      // passing local variable chunk reader by reference. We should investigate if this can cause
-      // any issues (e.g., if duckdb does not consume all data from the chunk reader in append and
-      // we move to the next chunk reader, then the previous chunk reader's state will be lost).
-      duckdb::DataChunk chunk;
-      if (!chunk_reader.get_next_chunk(chunk)) { break; }
-
-      std::lock_guard<std::mutex> guard(lock);
-      // Initialize result collection if it is null (from a move)
-      if (!result_collection) {
-        result_collection = duckdb::make_uniq<duckdb::ColumnDataCollection>(
-          _client_ctx, sirius::to_duckdb_vec(types));
-      }
-      result_collection->Append(chunk);
-    }
-  };
-
-  std::for_each(input_batches.begin(), input_batches.end(), sink_single_batch);
+  });
 }
 
 }  // namespace op

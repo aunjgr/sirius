@@ -241,6 +241,34 @@ duckdb::unique_ptr<duckdb::QueryResult> sirius_interface::sirius_execute_query(
   return current_result;
 };
 
+void sirius_interface::sirius_execute_streaming(
+  duckdb::ClientContext& context,
+  const duckdb::string& query,
+  duckdb::shared_ptr<sirius_prepared_statement_data> statement,
+  std::function<bool(const duckdb::DataChunk&)> callback)
+{
+  if (!statement || !callback) {
+    throw duckdb::InvalidInputException("streaming Sirius execution requires a plan and callback");
+  }
+
+  begin_query_internal(query);
+  try {
+    auto engine                 = duckdb::make_uniq<sirius_engine>(context, *this);
+    sirius_active_query->engine = std::move(engine);
+    auto collector              = duckdb::make_uniq<op::sirius_physical_streaming_collector>(
+      *statement, client_context, std::move(callback));
+    get_sirius_engine().initialize(std::move(collector));
+    sirius_active_query->sirius_prepared = std::move(statement);
+
+    if (evidence) { (void)evidence->mark_backend_started(execution_backend::SIRIUS_GPU); }
+    get_sirius_engine().execute();
+    (void)end_query_internal(true, false);
+  } catch (...) {
+    if (sirius_active_query) { (void)end_query_internal(false, false); }
+    throw;
+  }
+}
+
 sirius::sirius_engine& sirius_interface::get_sirius_engine()
 {
   D_ASSERT(sirius_active_query);

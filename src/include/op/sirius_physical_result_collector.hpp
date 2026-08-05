@@ -25,6 +25,8 @@
 #include <duckdb/common/types/column/column_data_collection.hpp>
 #include <duckdb/main/client_context.hpp>
 
+#include <functional>
+
 namespace sirius {
 class sirius_prepared_statement_data;
 
@@ -96,6 +98,26 @@ class sirius_physical_materialized_collector : public sirius_physical_result_col
 
  private:
   duckdb::ClientContext& _client_ctx;
+};
+
+using result_chunk_callback = std::function<bool(const duckdb::DataChunk&)>;
+
+/// Result sink that transfers each decoded chunk directly to its consumer.
+/// The callback is serialized and synchronous: returning from sink means the
+/// consumer has finished with the chunk, and a slow consumer backpressures the
+/// final pipeline without a result-wide queue.
+class sirius_physical_streaming_collector : public sirius_physical_result_collector {
+ public:
+  sirius_physical_streaming_collector(::sirius::sirius_prepared_statement_data& data,
+                                      duckdb::ClientContext& client_ctx,
+                                      result_chunk_callback callback);
+
+  duckdb::unique_ptr<duckdb::QueryResult> get_result() override;
+  void sink(const operator_data& input_data, rmm::cuda_stream_view stream) override;
+
+ private:
+  duckdb::ClientContext& client_ctx_;
+  result_chunk_callback callback_;
 };
 
 }  // namespace op

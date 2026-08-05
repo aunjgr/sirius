@@ -39,7 +39,7 @@ extern "C" int cudaProfilerStop();
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 #include "duckdb/parser/parser.hpp"
 #include "duckdb/planner/planner.hpp"
-#include "planner/sirius_physical_plan_generator.hpp"
+#include "planner/sirius_prepare.hpp"
 #include "transparent/sirius_optimizer_extension.hpp"
 // #include "from_substrait.hpp"
 #ifdef SIRIUS_ENABLE_LEGACY
@@ -388,15 +388,6 @@ static void RegisterLegacyGPUFunctions(CatalogTransaction& transaction, Catalog&
 }
 #endif  // SIRIUS_ENABLE_LEGACY
 
-static unique_ptr<sirius::op::sirius_physical_operator> SiriusGeneratePhysicalPlan(
-  ClientContext& context, unique_ptr<LogicalOperator>& logical_plan)
-{
-  sirius::planner::sirius_physical_plan_generator physical_planner =
-    sirius::planner::sirius_physical_plan_generator(context);
-  auto physical_plan = physical_planner.create_plan(std::move(logical_plan));
-  return physical_plan;
-}
-
 // The result of the GPUExecutionBind function is a unique pointer to a FunctionData object.
 // This result of this function is used as an argument to the GPUExecutionFunction function (data_p
 // argument), which is called to execute the table function.
@@ -433,10 +424,9 @@ unique_ptr<FunctionData> SiriusExtension::GPUExecutionBind(ClientContext& contex
   unique_ptr<LogicalOperator> query_plan = result->ExtractPlan(context);
   SIRIUS_LOG_DEBUG("Query plan:\n{}", query_plan->ToString());
   try {
-    auto sirius_physical_plan = SiriusGeneratePhysicalPlan(context, query_plan);
+    auto gpu_prepared =
+      ::sirius::prepare_sirius_statement(context, std::move(prepared), std::move(query_plan));
     SIRIUS_LOG_DEBUG("Done generating sirius physical plan");
-    auto gpu_prepared = make_shared_ptr<::sirius::sirius_prepared_statement_data>(
-      std::move(prepared), std::move(sirius_physical_plan));
     result->gpu_prepared = gpu_prepared;
   } catch (std::exception& e) {
     ErrorData error(e);
