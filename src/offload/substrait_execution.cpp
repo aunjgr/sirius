@@ -139,12 +139,13 @@ tae_read parse_tae_read(std::string_view bytes)
     const auto tag       = reader.varint();
     const auto field     = static_cast<unsigned>(tag >> 3U);
     const auto wire_type = static_cast<unsigned>(tag & 7U);
-    if (field == 0 || field > 11) { invalid("TaeRead contains an unknown field"); }
+    if (field == 0 || field > 12) { invalid("TaeRead contains an unknown field"); }
     const auto mask = static_cast<std::uint16_t>(1U << (field - 1U));
     if ((seen & mask) != 0) { invalid("TaeRead contains a duplicate field"); }
     seen |= mask;
 
-    const bool is_varint = field == 1 || field == 2 || field == 5 || field == 6 || field == 11;
+    const bool is_varint =
+      field == 1 || field == 2 || field == 5 || field == 6 || field == 11 || field == 12;
     if (wire_type != (is_varint ? 0U : 2U)) { invalid("TaeRead field has the wrong wire type"); }
     switch (field) {
       case 1: {
@@ -165,6 +166,7 @@ tae_read parse_tae_read(std::string_view bytes)
       case 9: result.manifest_sha256 = reader.bytes(); break;
       case 10: result.capability_hash = reader.bytes(); break;
       case 11: result.expires_at_unix_ms = reader.varint(); break;
+      case 12: result.database_id = reader.varint(); break;
       default: invalid("TaeRead contains an unknown field");
     }
   }
@@ -182,7 +184,8 @@ void validate_tae_read(const tae_read& request, std::uint64_t now_unix_ms)
   if (request.read_ref.empty() || request.read_ref.size() > k_max_read_ref_bytes) {
     invalid("TaeRead read_ref is empty or too large");
   }
-  if (request.query_id.empty() || request.account_id == 0 || request.table_id == 0) {
+  if (request.query_id.empty() || request.account_id == 0 || request.database_id == 0 ||
+      request.table_id == 0) {
     invalid("TaeRead identity fields are incomplete");
   }
   if (request.snapshot_ts.size() != 12 || request.schema_digest.size() != 32 ||
@@ -207,6 +210,12 @@ void validate_type(const ::substrait::Type& type)
     case ::substrait::Type::kString:
     case ::substrait::Type::kDate:
     case ::substrait::Type::kVarchar: break;
+    case ::substrait::Type::kDecimal:
+      if (type.decimal().precision() <= 0 || type.decimal().precision() > 38 ||
+          type.decimal().scale() < 0 || type.decimal().scale() > type.decimal().precision()) {
+        unsupported("Substrait decimal precision or scale is outside the Sirius range");
+      }
+      break;
     case ::substrait::Type::kPrecisionTimestamp:
       if (type.precision_timestamp().precision() != 6) {
         unsupported("only microsecond Substrait timestamps are supported");
@@ -242,8 +251,8 @@ class plan_validator {
 
   std::vector<std::unique_ptr<resolved_tae_read>> validate()
   {
-    if (plan_.relations_size() != 1 || !plan_.relations(0).has_root()) {
-      unsupported("Sirius v1 requires exactly one root relation and no CTEs");
+    if (plan_.relations_size() == 0 || !plan_.relations(plan_.relations_size() - 1).has_root()) {
+      invalid("Substrait plan requires one final root relation");
     }
     if (plan_.parameter_bindings_size() != 0 || plan_.type_aliases_size() != 0 ||
         plan_.has_execution_behavior()) {
@@ -256,7 +265,16 @@ class plan_validator {
     }
     validate_function_declarations();
 
-    auto* root = plan_.mutable_relations(0)->mutable_root();
+    const auto producer_count = plan_.relations_size() - 1;
+    for (int i = 0; i < producer_count; ++i) {
+      if (!plan_.relations(i).has_rel()) {
+        invalid("only the final Substrait PlanRel may be a root");
+      }
+      current_relation_ordinal_ = static_cast<std::uint32_t>(i);
+      validate_rel(plan_.mutable_relations(i)->mutable_rel());
+    }
+    current_relation_ordinal_ = static_cast<std::uint32_t>(producer_count);
+    auto* root                = plan_.mutable_relations(producer_count)->mutable_root();
     if (!root->has_input()) { invalid("Substrait root relation has no input"); }
     validate_rel(root->mutable_input());
     return std::move(resolutions_);
@@ -272,24 +290,11 @@ class plan_validator {
       }
     }
 
-    static const std::unordered_set<std::string> scalar_allowlist    = {"and",
-                                                                        "or",
-                                                                        "not",
-                                                                        "equal",
-                                                                        "not_equal",
-                                                                        "lt",
-                                                                        "lte",
-                                                                        "gt",
-                                                                        "gte",
-                                                                        "is_null",
-                                                                        "is_not_null",
-                                                                        "is_not_distinct_from",
-                                                                        "add",
-                                                                        "subtract",
-                                                                        "multiply",
-                                                                        "divide",
-                                                                        "modulus",
-                                                                        "between"};
+    static const std::unordered_set<std::string> scalar_allowlist = {
+      "and",  "or",          "not",       "equal",   "not_equal",   "lt",
+      "lte",  "gt",          "gte",       "is_null", "is_not_null", "is_not_distinct_from",
+      "add",  "subtract",    "multiply",  "divide",  "modulus",     "between",
+      "like", "starts_with", "substring", "extract"};
     static const std::unordered_set<std::string> aggregate_allowlist = {
       "count", "sum", "min", "max", "avg"};
 
@@ -336,24 +341,11 @@ class plan_validator {
         break;
       }
       case ::substrait::Expression::kScalarFunction: {
-        static const std::unordered_set<std::string> allowed = {"and",
-                                                                "or",
-                                                                "not",
-                                                                "equal",
-                                                                "not_equal",
-                                                                "lt",
-                                                                "lte",
-                                                                "gt",
-                                                                "gte",
-                                                                "is_null",
-                                                                "is_not_null",
-                                                                "is_not_distinct_from",
-                                                                "add",
-                                                                "subtract",
-                                                                "multiply",
-                                                                "divide",
-                                                                "modulus",
-                                                                "between"};
+        static const std::unordered_set<std::string> allowed = {
+          "and",  "or",          "not",       "equal",   "not_equal",   "lt",
+          "lte",  "gt",          "gte",       "is_null", "is_not_null", "is_not_distinct_from",
+          "add",  "subtract",    "multiply",  "divide",  "modulus",     "between",
+          "like", "starts_with", "substring", "extract"};
         const auto& function                                 = expression.scalar_function();
         if (allowed.count(function_name(function.function_reference())) == 0) {
           unsupported("aggregate function used as a scalar expression");
@@ -380,6 +372,32 @@ class plan_validator {
         validate_type(cast.type());
         break;
       }
+      case ::substrait::Expression::kIfThen: {
+        const auto& if_then = expression.if_then();
+        if (if_then.ifs_size() == 0 || !if_then.has_else_()) {
+          invalid("Substrait IfThen requires a branch and an else expression");
+        }
+        for (const auto& branch : if_then.ifs()) {
+          if (!branch.has_if_() || !branch.has_then()) {
+            invalid("Substrait IfThen branch is incomplete");
+          }
+          validate_expression(branch.if_());
+          validate_expression(branch.then());
+        }
+        validate_expression(if_then.else_());
+        break;
+      }
+      case ::substrait::Expression::kSingularOrList: {
+        const auto& in = expression.singular_or_list();
+        if (!in.has_value() || in.options_size() == 0) {
+          invalid("Substrait SingularOrList requires a value and options");
+        }
+        validate_expression(in.value());
+        for (const auto& option : in.options()) {
+          validate_expression(option);
+        }
+        break;
+      }
       default: unsupported("Substrait expression is outside the Sirius v1 expression subset");
     }
   }
@@ -397,6 +415,13 @@ class plan_validator {
       case ::substrait::Expression_Literal::kString:
       case ::substrait::Expression_Literal::kDate:
       case ::substrait::Expression_Literal::kVarChar: break;
+      case ::substrait::Expression_Literal::kDecimal:
+        if (literal.decimal().value().size() != 16 || literal.decimal().precision() <= 0 ||
+            literal.decimal().precision() > 38 || literal.decimal().scale() < 0 ||
+            literal.decimal().scale() > literal.decimal().precision()) {
+          unsupported("Substrait decimal literal is outside the Sirius range");
+        }
+        break;
       case ::substrait::Expression_Literal::kPrecisionTimestamp:
         if (literal.precision_timestamp().precision() != 6) {
           unsupported("only microsecond Substrait timestamp literals are supported");
@@ -504,6 +529,7 @@ class plan_validator {
     const bool authenticated =
       resolution->read_ref() == request.read_ref && resolution->query_id() == request.query_id &&
       resolution->account_id() == request.account_id &&
+      resolution->database_id() == request.database_id &&
       resolution->table_id() == request.table_id &&
       resolution->snapshot_ts() == request.snapshot_ts &&
       resolution->schema_digest() == request.schema_digest &&
@@ -557,6 +583,31 @@ class plan_validator {
         }
         validate_rel(rel->mutable_fetch()->mutable_input());
         break;
+      case ::substrait::Rel::kJoin: {
+        const auto& join = rel->join();
+        switch (join.type()) {
+          case ::substrait::JoinRel::JOIN_TYPE_INNER:
+          case ::substrait::JoinRel::JOIN_TYPE_LEFT:
+          case ::substrait::JoinRel::JOIN_TYPE_LEFT_SEMI:
+          case ::substrait::JoinRel::JOIN_TYPE_LEFT_ANTI: break;
+          default: unsupported("Substrait join type is outside the Sirius TPC-H subset");
+        }
+        if (!join.has_left() || !join.has_right() || !join.has_expression()) {
+          invalid("Substrait join relation is incomplete");
+        }
+        if (join.has_post_join_filter()) {
+          unsupported("Substrait post-join filters are not supported; use FilterRel");
+        }
+        validate_rel(rel->mutable_join()->mutable_left());
+        validate_rel(rel->mutable_join()->mutable_right());
+        validate_expression(join.expression());
+        break;
+      }
+      case ::substrait::Rel::kReference:
+        if (rel->reference().subtree_ordinal() >= current_relation_ordinal_) {
+          invalid("Substrait ReferenceRel must refer to an earlier top-level relation");
+        }
+        break;
       default: unsupported("Substrait relation is outside the Sirius v1 operator subset");
     }
   }
@@ -566,6 +617,7 @@ class plan_validator {
   std::uint64_t now_unix_ms_;
   std::unordered_map<std::uint32_t, std::string> functions_;
   std::vector<std::unique_ptr<resolved_tae_read>> resolutions_;
+  std::uint32_t current_relation_ordinal_ = 0;
 };
 
 }  // namespace

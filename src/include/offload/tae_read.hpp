@@ -19,6 +19,7 @@ struct tae_read {
   std::string read_ref;
   std::string query_id;
   std::uint64_t account_id = 0;
+  std::uint64_t database_id = 0;
   std::uint64_t table_id   = 0;
   std::string snapshot_ts;
   std::string schema_digest;

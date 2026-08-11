@@ -30,6 +30,7 @@ class resolved_tae_read {
   [[nodiscard]] virtual const std::string& read_ref() const noexcept                      = 0;
   [[nodiscard]] virtual const std::string& query_id() const noexcept                      = 0;
   [[nodiscard]] virtual std::uint64_t account_id() const noexcept                         = 0;
+  [[nodiscard]] virtual std::uint64_t database_id() const noexcept                        = 0;
   [[nodiscard]] virtual std::uint64_t table_id() const noexcept                           = 0;
   [[nodiscard]] virtual const std::string& snapshot_ts() const noexcept                   = 0;
   [[nodiscard]] virtual const std::string& schema_digest() const noexcept                 = 0;
