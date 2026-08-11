@@ -588,6 +588,7 @@ class plan_validator {
         switch (join.type()) {
           case ::substrait::JoinRel::JOIN_TYPE_INNER:
           case ::substrait::JoinRel::JOIN_TYPE_LEFT:
+          case ::substrait::JoinRel::JOIN_TYPE_RIGHT:
           case ::substrait::JoinRel::JOIN_TYPE_LEFT_SEMI:
           case ::substrait::JoinRel::JOIN_TYPE_LEFT_ANTI:
           case ::substrait::JoinRel::JOIN_TYPE_RIGHT_SEMI:

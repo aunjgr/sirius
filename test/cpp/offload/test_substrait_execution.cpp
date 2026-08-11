@@ -248,7 +248,7 @@ TEST_CASE("only explicit Sirius v1 capabilities are fallback eligible", "[substr
     fake_resolver resolver;
     ::substrait::Plan plan;
     auto* join = plan.add_relations()->mutable_root()->mutable_input()->mutable_join();
-    join->set_type(::substrait::JoinRel::JOIN_TYPE_RIGHT);
+    join->set_type(::substrait::JoinRel::JOIN_TYPE_OUTER);
     require_error(plan.SerializeAsString(), resolver, substrait_error_code::UNSUPPORTED_PLAN, true);
     REQUIRE(resolver.calls == 0);
   }
@@ -283,6 +283,7 @@ TEST_CASE("the complete TPC-H join subset is admitted", "[substrait_contract]")
   const auto read_plan = make_read_plan(make_tae_read());
   for (const auto join_type : {::substrait::JoinRel::JOIN_TYPE_INNER,
                                ::substrait::JoinRel::JOIN_TYPE_LEFT,
+                               ::substrait::JoinRel::JOIN_TYPE_RIGHT,
                                ::substrait::JoinRel::JOIN_TYPE_LEFT_SEMI,
                                ::substrait::JoinRel::JOIN_TYPE_LEFT_ANTI,
                                ::substrait::JoinRel::JOIN_TYPE_RIGHT_SEMI,
