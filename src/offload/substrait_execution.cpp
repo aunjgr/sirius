@@ -589,7 +589,9 @@ class plan_validator {
           case ::substrait::JoinRel::JOIN_TYPE_INNER:
           case ::substrait::JoinRel::JOIN_TYPE_LEFT:
           case ::substrait::JoinRel::JOIN_TYPE_LEFT_SEMI:
-          case ::substrait::JoinRel::JOIN_TYPE_LEFT_ANTI: break;
+          case ::substrait::JoinRel::JOIN_TYPE_LEFT_ANTI:
+          case ::substrait::JoinRel::JOIN_TYPE_RIGHT_SEMI:
+          case ::substrait::JoinRel::JOIN_TYPE_RIGHT_ANTI: break;
           default: unsupported("Substrait join type is outside the Sirius TPC-H subset");
         }
         if (!join.has_left() || !join.has_right() || !join.has_expression()) {

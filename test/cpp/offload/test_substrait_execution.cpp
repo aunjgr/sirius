@@ -284,7 +284,9 @@ TEST_CASE("the complete TPC-H join subset is admitted", "[substrait_contract]")
   for (const auto join_type : {::substrait::JoinRel::JOIN_TYPE_INNER,
                                ::substrait::JoinRel::JOIN_TYPE_LEFT,
                                ::substrait::JoinRel::JOIN_TYPE_LEFT_SEMI,
-                               ::substrait::JoinRel::JOIN_TYPE_LEFT_ANTI}) {
+                               ::substrait::JoinRel::JOIN_TYPE_LEFT_ANTI,
+                               ::substrait::JoinRel::JOIN_TYPE_RIGHT_SEMI,
+                               ::substrait::JoinRel::JOIN_TYPE_RIGHT_ANTI}) {
     fake_resolver resolver;
     ::substrait::Plan plan;
     plan.add_expected_type_urls(std::string(sirius::offload::k_tae_read_type_url));
