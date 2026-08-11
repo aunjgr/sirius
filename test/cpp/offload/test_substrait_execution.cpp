@@ -102,7 +102,9 @@ class fake_resolution final : public resolved_tae_read {
   const std::string& relation_name() const noexcept override { return relation_name_; }
   const ::substrait::NamedStruct& canonical_schema() const noexcept override { return schema_; }
   const std::string& read_ref() const noexcept override
-  { return read_ref_mismatch_ ? bad_read_ref_ : read_ref_; }
+  {
+    return read_ref_mismatch_ ? bad_read_ref_ : read_ref_;
+  }
   const std::string& query_id() const noexcept override { return query_id_; }
   std::uint64_t account_id() const noexcept override { return 42; }
   std::uint64_t database_id() const noexcept override { return database_id_mismatch_ ? 22 : 21; }
@@ -111,7 +113,9 @@ class fake_resolution final : public resolved_tae_read {
   const std::string& schema_digest() const noexcept override { return schema_digest_; }
   const std::string& manifest_sha256() const noexcept override { return manifest_sha256_; }
   const std::string& capability_hash() const noexcept override
-  { return capability_mismatch_ ? bad_capability_hash_ : capability_hash_; }
+  {
+    return capability_mismatch_ ? bad_capability_hash_ : capability_hash_;
+  }
   std::uint64_t expires_at_unix_ms() const noexcept override { return 2000; }
 
  private:
@@ -137,7 +141,7 @@ class fake_resolver final : public tae_read_resolver {
                                              const ::substrait::NamedStruct& schema) override
   {
     ++calls;
-    last_read_ref = request.read_ref;
+    last_read_ref    = request.read_ref;
     last_database_id = request.database_id;
     return std::make_unique<fake_resolution>(
       schema, mismatch, read_ref_mismatch, database_id_mismatch, destroyed);

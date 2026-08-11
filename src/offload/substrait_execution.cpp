@@ -30,13 +30,19 @@ namespace {
 using protobuf_message = ::duckdb::google::protobuf::Message;
 
 [[noreturn]] void fail(substrait_error_code code, const std::string& message)
-{ throw substrait_execution_error(code, message); }
+{
+  throw substrait_execution_error(code, message);
+}
 
 [[noreturn]] void invalid(const std::string& message)
-{ fail(substrait_error_code::INVALID_PLAN, message); }
+{
+  fail(substrait_error_code::INVALID_PLAN, message);
+}
 
 [[noreturn]] void unsupported(const std::string& message)
-{ fail(substrait_error_code::UNSUPPORTED_PLAN, message); }
+{
+  fail(substrait_error_code::UNSUPPORTED_PLAN, message);
+}
 
 std::uint64_t system_now_unix_ms()
 {
@@ -346,7 +352,7 @@ class plan_validator {
           "lte",  "gt",          "gte",       "is_null", "is_not_null", "is_not_distinct_from",
           "add",  "subtract",    "multiply",  "divide",  "modulus",     "between",
           "like", "starts_with", "substring", "extract"};
-        const auto& function                                 = expression.scalar_function();
+        const auto& function = expression.scalar_function();
         if (allowed.count(function_name(function.function_reference())) == 0) {
           unsupported("aggregate function used as a scalar expression");
         }
@@ -645,7 +651,9 @@ substrait_execution::substrait_execution(
 }
 
 bool substrait_execution::transition(execution_state expected, execution_state desired) noexcept
-{ return state_.compare_exchange_strong(expected, desired); }
+{
+  return state_.compare_exchange_strong(expected, desired);
+}
 
 void substrait_execution::release_resolutions() noexcept
 {
