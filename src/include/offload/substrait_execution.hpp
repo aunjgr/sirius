@@ -28,7 +28,7 @@ class sirius_prepared_statement_data;
 
 namespace sirius::offload {
 
-inline constexpr std::uint32_t k_tae_read_protocol_version = 1;
+inline constexpr std::uint32_t k_tae_read_protocol_version = 2;
 inline constexpr std::uint64_t k_tae_read_feature_bits     = 0;
 inline constexpr std::size_t k_max_substrait_plan_bytes    = 16U * 1024U * 1024U;
 inline constexpr std::size_t k_max_read_ref_bytes          = 4096U;

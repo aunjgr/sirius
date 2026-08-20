@@ -176,6 +176,11 @@ tae_read parse_tae_read(std::string_view bytes)
       default: invalid("TaeRead contains an unknown field");
     }
   }
+  constexpr std::uint16_t required_fields =
+    static_cast<std::uint16_t>(((1U << 12U) - 1U) & ~(1U << 1U));
+  if ((seen & required_fields) != required_fields) {
+    invalid("TaeRead is missing a required field");
+  }
   return result;
 }
 
@@ -190,8 +195,7 @@ void validate_tae_read(const tae_read& request, std::uint64_t now_unix_ms)
   if (request.read_ref.empty() || request.read_ref.size() > k_max_read_ref_bytes) {
     invalid("TaeRead read_ref is empty or too large");
   }
-  if (request.query_id.empty() || request.account_id == 0 || request.database_id == 0 ||
-      request.table_id == 0) {
+  if (request.query_id.empty() || request.database_id == 0 || request.table_id == 0) {
     invalid("TaeRead identity fields are incomplete");
   }
   if (request.snapshot_ts.size() != 12 || request.schema_digest.size() != 32 ||

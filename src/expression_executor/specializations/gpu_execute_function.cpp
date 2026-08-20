@@ -50,11 +50,16 @@
 // There has to be a better way to extract the function semantics than string comparison!
 //----------Function Strings----------//
 #define ADD_FUNC_STR            "+"
+#define ADD_FUNC_ALIAS          "add"
 #define SUB_FUNC_STR            "-"
+#define SUB_FUNC_ALIAS          "subtract"
 #define MUL_FUNC_STR            "*"
+#define MUL_FUNC_ALIAS          "multiply"
 #define DIV_FUNC_STR            "/"
+#define DIV_FUNC_ALIAS          "divide"
 #define INT_DIV_FUNC_STR        "//"
 #define MOD_FUNC_STR            "%"
+#define MOD_FUNC_ALIAS          "modulus"
 #define SUBSTRING_FUNC_STR_1    "substring"
 #define SUBSTRING_FUNC_STR_2    "substr"
 #define LIKE_FUNC_STR           "~~"
@@ -174,19 +179,20 @@ execute_result gpu_expression_executor::execute(duckdb::BoundFunctionExpression 
     return execute_result(cudf::binary_operation(
       left.get_column_view(), right.get_column_view(), op, output_type, _stream, _mr));
   };
-  if (func_string == ADD_FUNC_STR) {
+  if (func_string == ADD_FUNC_STR || func_string == ADD_FUNC_ALIAS) {
     return execute_numeric_binary_func(cudf::binary_operator::ADD);
   }
-  if (func_string == SUB_FUNC_STR) {
+  if (func_string == SUB_FUNC_STR || func_string == SUB_FUNC_ALIAS) {
     return execute_numeric_binary_func(cudf::binary_operator::SUB);
   }
-  if (func_string == MUL_FUNC_STR) {
+  if (func_string == MUL_FUNC_STR || func_string == MUL_FUNC_ALIAS) {
     return execute_numeric_binary_func(cudf::binary_operator::MUL);
   }
-  if (func_string == DIV_FUNC_STR || func_string == INT_DIV_FUNC_STR) {
+  if (func_string == DIV_FUNC_STR || func_string == INT_DIV_FUNC_STR ||
+      func_string == DIV_FUNC_ALIAS) {
     return execute_numeric_binary_func(cudf::binary_operator::DIV);
   }
-  if (func_string == MOD_FUNC_STR) {
+  if (func_string == MOD_FUNC_STR || func_string == MOD_FUNC_ALIAS) {
     return execute_numeric_binary_func(cudf::binary_operator::MOD);
   }
 
@@ -413,7 +419,7 @@ execute_result gpu_expression_executor::execute(duckdb::BoundFunctionExpression 
 
   // If we reach here, it means the function is not supported in the expression executor
   throw not_implemented_exception(
-    "[gpu_expression_executor:function] execute called on unsupported function: %s", func_string);
+    "[gpu_expression_executor:function] execute called on unsupported function: {}", func_string);
 }
 
 }  // namespace sirius
