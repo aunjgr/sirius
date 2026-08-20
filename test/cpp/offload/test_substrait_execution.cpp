@@ -42,14 +42,16 @@ void append_bytes_field(std::string& output, unsigned field, const std::string& 
   output.append(value);
 }
 
-std::string make_tae_read(std::uint64_t feature_bits = 0, std::uint64_t expires_at = 2000)
+std::string make_tae_read(std::uint64_t feature_bits = 0,
+                          std::uint64_t expires_at   = 2000,
+                          std::uint64_t account_id   = 42)
 {
   std::string result;
-  append_varint_field(result, 1, 1);
+  append_varint_field(result, 1, sirius::offload::k_tae_read_protocol_version);
   if (feature_bits != 0) { append_varint_field(result, 2, feature_bits); }
   append_bytes_field(result, 3, "opaque-read-ref");
   append_bytes_field(result, 4, "query-1");
-  append_varint_field(result, 5, 42);
+  append_varint_field(result, 5, account_id);
   append_varint_field(result, 6, 84);
   append_bytes_field(result, 7, std::string(12, 's'));
   append_bytes_field(result, 8, std::string(32, 'd'));
@@ -85,11 +87,13 @@ std::string make_tae_read(std::uint64_t feature_bits = 0, std::uint64_t expires_
 class fake_resolution final : public resolved_tae_read {
  public:
   fake_resolution(::substrait::NamedStruct schema,
+                  std::uint64_t account_id,
                   bool capability_mismatch,
                   bool read_ref_mismatch,
                   bool database_id_mismatch,
                   int& destroyed)
     : schema_(std::move(schema)),
+      account_id_(account_id),
       capability_mismatch_(capability_mismatch),
       read_ref_mismatch_(read_ref_mismatch),
       database_id_mismatch_(database_id_mismatch),
@@ -106,7 +110,7 @@ class fake_resolution final : public resolved_tae_read {
     return read_ref_mismatch_ ? bad_read_ref_ : read_ref_;
   }
   const std::string& query_id() const noexcept override { return query_id_; }
-  std::uint64_t account_id() const noexcept override { return 42; }
+  std::uint64_t account_id() const noexcept override { return account_id_; }
   std::uint64_t database_id() const noexcept override { return database_id_mismatch_ ? 22 : 21; }
   std::uint64_t table_id() const noexcept override { return 84; }
   const std::string& snapshot_ts() const noexcept override { return snapshot_ts_; }
@@ -120,6 +124,7 @@ class fake_resolution final : public resolved_tae_read {
 
  private:
   ::substrait::NamedStruct schema_;
+  std::uint64_t account_id_;
   bool capability_mismatch_;
   bool read_ref_mismatch_;
   bool database_id_mismatch_;
@@ -142,9 +147,10 @@ class fake_resolver final : public tae_read_resolver {
   {
     ++calls;
     last_read_ref    = request.read_ref;
+    last_account_id  = request.account_id;
     last_database_id = request.database_id;
     return std::make_unique<fake_resolution>(
-      schema, mismatch, read_ref_mismatch, database_id_mismatch, destroyed);
+      schema, request.account_id, mismatch, read_ref_mismatch, database_id_mismatch, destroyed);
   }
 
   bool mismatch             = false;
@@ -153,6 +159,7 @@ class fake_resolver final : public tae_read_resolver {
   int calls                 = 0;
   int destroyed             = 0;
   std::string last_read_ref;
+  std::uint64_t last_account_id  = 0;
   std::uint64_t last_database_id = 0;
 };
 
@@ -194,6 +201,17 @@ TEST_CASE("Substrait TaeRead is authenticated and rewritten without execution",
     REQUIRE_FALSE(read.has_extension_table());
   }
   REQUIRE(resolver.destroyed == 1);
+}
+
+TEST_CASE("Substrait TaeRead accepts an explicitly encoded system account", "[substrait_contract]")
+{
+  fake_resolver resolver;
+  const auto input = make_read_plan(make_tae_read(0, 2000, 0)).SerializeAsString();
+  const auto validated =
+    sirius::offload::detail::validate_and_resolve_substrait(input, resolver, 1000);
+  REQUIRE(resolver.calls == 1);
+  REQUIRE(resolver.last_account_id == 0);
+  REQUIRE(validated.resolutions.size() == 1);
 }
 
 TEST_CASE("Substrait capability failures never reach GPU planning", "[substrait_contract]")
@@ -375,7 +393,7 @@ TEST_CASE("malformed and unknown Substrait input is rejected as invalid", "[subs
   {
     fake_resolver resolver;
     std::string legacy;
-    append_varint_field(legacy, 1, 1);
+    append_varint_field(legacy, 1, sirius::offload::k_tae_read_protocol_version);
     append_bytes_field(legacy, 3, "opaque-read-ref");
     append_bytes_field(legacy, 4, "query-1");
     append_varint_field(legacy, 5, 42);
@@ -386,6 +404,27 @@ TEST_CASE("malformed and unknown Substrait input is rejected as invalid", "[subs
     append_bytes_field(legacy, 10, std::string(32, 'c'));
     append_varint_field(legacy, 11, 2000);
     require_error(make_read_plan(legacy).SerializeAsString(),
+                  resolver,
+                  substrait_error_code::INVALID_PLAN,
+                  false);
+    REQUIRE(resolver.calls == 0);
+  }
+
+  SECTION("TaeRead without an account identity field")
+  {
+    fake_resolver resolver;
+    std::string missing_account;
+    append_varint_field(missing_account, 1, sirius::offload::k_tae_read_protocol_version);
+    append_bytes_field(missing_account, 3, "opaque-read-ref");
+    append_bytes_field(missing_account, 4, "query-1");
+    append_varint_field(missing_account, 6, 84);
+    append_bytes_field(missing_account, 7, std::string(12, 's'));
+    append_bytes_field(missing_account, 8, std::string(32, 'd'));
+    append_bytes_field(missing_account, 9, std::string(32, 'm'));
+    append_bytes_field(missing_account, 10, std::string(32, 'c'));
+    append_varint_field(missing_account, 11, 2000);
+    append_varint_field(missing_account, 12, 21);
+    require_error(make_read_plan(missing_account).SerializeAsString(),
                   resolver,
                   substrait_error_code::INVALID_PLAN,
                   false);
