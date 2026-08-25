@@ -14,7 +14,9 @@
 
 namespace {
 
+using sirius::offload::resolved_stream_read;
 using sirius::offload::resolved_tae_read;
+using sirius::offload::stream_read;
 using sirius::offload::substrait_error_code;
 using sirius::offload::substrait_execution_error;
 using sirius::offload::tae_read;
@@ -62,6 +64,23 @@ std::string make_tae_read(std::uint64_t feature_bits = 0,
   return result;
 }
 
+std::string make_stream_read(std::uint64_t feature_bits = 0,
+                             std::uint64_t expires_at   = 2000,
+                             std::uint64_t account_id   = 42)
+{
+  std::string result;
+  append_varint_field(result, 1, sirius::offload::k_stream_read_protocol_version);
+  if (feature_bits != 0) { append_varint_field(result, 2, feature_bits); }
+  append_bytes_field(result, 3, std::string(32, 'r'));
+  append_bytes_field(result, 4, "0123456789abcdef");
+  append_varint_field(result, 5, account_id);
+  append_bytes_field(result, 6, std::string(12, 's'));
+  append_bytes_field(result, 7, std::string(32, 'd'));
+  append_bytes_field(result, 8, std::string(32, 'c'));
+  append_varint_field(result, 9, expires_at);
+  return result;
+}
+
 ::substrait::NamedStruct make_schema()
 {
   ::substrait::NamedStruct schema;
@@ -70,17 +89,18 @@ std::string make_tae_read(std::uint64_t feature_bits = 0,
   return schema;
 }
 
-::substrait::Plan make_read_plan(const std::string& tae_read_bytes)
+::substrait::Plan make_read_plan(const std::string& read_bytes,
+                                 std::string_view type_url = sirius::offload::k_tae_read_type_url)
 {
   ::substrait::Plan plan;
-  plan.add_expected_type_urls(std::string(sirius::offload::k_tae_read_type_url));
+  plan.add_expected_type_urls(std::string(type_url));
   auto* root = plan.add_relations()->mutable_root();
   root->add_names("value");
   auto* read = root->mutable_input()->mutable_read();
   read->mutable_base_schema()->CopyFrom(make_schema());
   auto* detail = read->mutable_extension_table()->mutable_detail();
-  detail->set_type_url(std::string(sirius::offload::k_tae_read_type_url));
-  detail->set_value(tae_read_bytes);
+  detail->set_type_url(std::string(type_url));
+  detail->set_value(read_bytes);
   return plan;
 }
 
@@ -106,9 +126,7 @@ class fake_resolution final : public resolved_tae_read {
   const std::string& relation_name() const noexcept override { return relation_name_; }
   const ::substrait::NamedStruct& canonical_schema() const noexcept override { return schema_; }
   const std::string& read_ref() const noexcept override
-  {
-    return read_ref_mismatch_ ? bad_read_ref_ : read_ref_;
-  }
+  { return read_ref_mismatch_ ? bad_read_ref_ : read_ref_; }
   const std::string& query_id() const noexcept override { return query_id_; }
   std::uint64_t account_id() const noexcept override { return account_id_; }
   std::uint64_t database_id() const noexcept override { return database_id_mismatch_ ? 22 : 21; }
@@ -117,9 +135,7 @@ class fake_resolution final : public resolved_tae_read {
   const std::string& schema_digest() const noexcept override { return schema_digest_; }
   const std::string& manifest_sha256() const noexcept override { return manifest_sha256_; }
   const std::string& capability_hash() const noexcept override
-  {
-    return capability_mismatch_ ? bad_capability_hash_ : capability_hash_;
-  }
+  { return capability_mismatch_ ? bad_capability_hash_ : capability_hash_; }
   std::uint64_t expires_at_unix_ms() const noexcept override { return 2000; }
 
  private:
@@ -140,6 +156,39 @@ class fake_resolution final : public resolved_tae_read {
   std::string bad_capability_hash_ = std::string(32, 'x');
 };
 
+class fake_stream_resolution final : public resolved_stream_read {
+ public:
+  fake_stream_resolution(::substrait::NamedStruct schema, bool mismatch, int& destroyed)
+    : schema_(std::move(schema)), mismatch_(mismatch), destroyed_(destroyed)
+  {
+  }
+
+  ~fake_stream_resolution() noexcept override { ++destroyed_; }
+
+  const std::string& relation_name() const noexcept override { return relation_name_; }
+  const ::substrait::NamedStruct& canonical_schema() const noexcept override { return schema_; }
+  const std::string& stream_ref() const noexcept override
+  { return mismatch_ ? bad_stream_ref_ : stream_ref_; }
+  const std::string& query_id() const noexcept override { return query_id_; }
+  std::uint64_t account_id() const noexcept override { return 42; }
+  const std::string& snapshot_ts() const noexcept override { return snapshot_ts_; }
+  const std::string& schema_digest() const noexcept override { return schema_digest_; }
+  const std::string& capability_hash() const noexcept override { return capability_hash_; }
+  std::uint64_t expires_at_unix_ms() const noexcept override { return 2000; }
+
+ private:
+  ::substrait::NamedStruct schema_;
+  bool mismatch_;
+  int& destroyed_;
+  std::string relation_name_   = "stream_query_1";
+  std::string stream_ref_      = std::string(32, 'r');
+  std::string bad_stream_ref_  = std::string(32, 'x');
+  std::string query_id_        = "0123456789abcdef";
+  std::string snapshot_ts_     = std::string(12, 's');
+  std::string schema_digest_   = std::string(32, 'd');
+  std::string capability_hash_ = std::string(32, 'c');
+};
+
 class fake_resolver final : public tae_read_resolver {
  public:
   std::unique_ptr<resolved_tae_read> resolve(const tae_read& request,
@@ -153,12 +202,24 @@ class fake_resolver final : public tae_read_resolver {
       schema, request.account_id, mismatch, read_ref_mismatch, database_id_mismatch, destroyed);
   }
 
+  std::unique_ptr<resolved_stream_read> resolve(const stream_read& request,
+                                                const ::substrait::NamedStruct& schema) override
+  {
+    ++stream_calls;
+    last_stream_ref = request.stream_ref;
+    return std::make_unique<fake_stream_resolution>(schema, stream_mismatch, stream_destroyed);
+  }
+
   bool mismatch             = false;
   bool read_ref_mismatch    = false;
   bool database_id_mismatch = false;
   int calls                 = 0;
   int destroyed             = 0;
+  bool stream_mismatch      = false;
+  int stream_calls          = 0;
+  int stream_destroyed      = 0;
   std::string last_read_ref;
+  std::string last_stream_ref;
   std::uint64_t last_account_id  = 0;
   std::uint64_t last_database_id = 0;
 };
@@ -212,6 +273,62 @@ TEST_CASE("Substrait TaeRead accepts an explicitly encoded system account", "[su
   REQUIRE(resolver.calls == 1);
   REQUIRE(resolver.last_account_id == 0);
   REQUIRE(validated.resolutions.size() == 1);
+}
+
+TEST_CASE("Substrait StreamRead is authenticated and rewritten without execution",
+          "[substrait_contract]")
+{
+  fake_resolver resolver;
+  const auto input =
+    make_read_plan(make_stream_read(), sirius::offload::k_stream_read_type_url).SerializeAsString();
+  {
+    auto validated = sirius::offload::detail::validate_and_resolve_substrait(input, resolver, 1000);
+    REQUIRE(resolver.stream_calls == 1);
+    REQUIRE(resolver.last_stream_ref == std::string(32, 'r'));
+    REQUIRE(resolver.stream_destroyed == 0);
+    REQUIRE(validated.resolutions.size() == 1);
+
+    ::substrait::Plan rewritten;
+    REQUIRE(rewritten.ParseFromString(validated.serialized));
+    const auto& read = rewritten.relations(0).root().input().read();
+    REQUIRE(read.has_named_table());
+    REQUIRE(read.named_table().names(0) == "stream_query_1");
+    REQUIRE_FALSE(read.has_extension_table());
+  }
+  REQUIRE(resolver.stream_destroyed == 1);
+}
+
+TEST_CASE("Substrait StreamRead failures remain fail-closed", "[substrait_contract]")
+{
+  SECTION("expired capability")
+  {
+    fake_resolver resolver;
+    const auto plan =
+      make_read_plan(make_stream_read(0, 1000), sirius::offload::k_stream_read_type_url)
+        .SerializeAsString();
+    require_error(plan, resolver, substrait_error_code::AUTHENTICATION_FAILED, false);
+    REQUIRE(resolver.stream_calls == 0);
+  }
+
+  SECTION("unknown feature bit")
+  {
+    fake_resolver resolver;
+    const auto plan = make_read_plan(make_stream_read(1), sirius::offload::k_stream_read_type_url)
+                        .SerializeAsString();
+    require_error(plan, resolver, substrait_error_code::UNSUPPORTED_PLAN, true);
+    REQUIRE(resolver.stream_calls == 0);
+  }
+
+  SECTION("resolver identity mismatch")
+  {
+    fake_resolver resolver;
+    resolver.stream_mismatch = true;
+    const auto plan = make_read_plan(make_stream_read(), sirius::offload::k_stream_read_type_url)
+                        .SerializeAsString();
+    require_error(plan, resolver, substrait_error_code::AUTHENTICATION_FAILED, false);
+    REQUIRE(resolver.stream_calls == 1);
+    REQUIRE(resolver.stream_destroyed == 1);
+  }
 }
 
 TEST_CASE("Substrait capability failures never reach GPU planning", "[substrait_contract]")

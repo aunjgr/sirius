@@ -65,6 +65,11 @@ duckdb_scan_task_global_state::duckdb_scan_task_global_state(
     _global_tf_state = _op.function.init_global(client_ctx, tf_input);
   }
 
+  if (_global_tf_state) {
+    _max_threads = std::max<std::uint64_t>(
+      1, std::min<std::uint64_t>(_max_threads, _global_tf_state->MaxThreads()));
+  }
+
   // We do not support in_out_functions
   if (_op.function.in_out_function) {
     throw duckdb::NotImplementedException(
