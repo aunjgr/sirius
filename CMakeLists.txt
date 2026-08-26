@@ -18,6 +18,8 @@ cmake_minimum_required(VERSION 3.30.4 FATAL_ERROR)
 
 project(sirius LANGUAGES CXX CUDA)
 
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/SiriusDependencies.cmake)
+
 # Set CUDA architecture
 if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
   set(CMAKE_CUDA_ARCHITECTURES native)
@@ -329,7 +331,7 @@ foreach(_target sirius_extension sirius_loadable_extension)
       $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/substrait/third_party/substrait>
       $<$<BOOL:${SIRIUS_LEGACY_INCLUDE_DIR}>:$<BUILD_INTERFACE:${SIRIUS_LEGACY_INCLUDE_DIR}>>
       # tae-scanner headers needed by tae_scan_task.cpp for TAEScanBindData
-      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../tae-scanner/include>)
+      $<BUILD_INTERFACE:${SIRIUS_TAE_SCANNER_DIR}/include>)
 
   if(SIRIUS_LEGACY_COMPILE_DEFINITIONS)
     target_compile_definitions(${_target}

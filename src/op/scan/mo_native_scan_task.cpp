@@ -19,10 +19,6 @@
 namespace sirius::op::scan {
 namespace {
 
-constexpr std::size_t max_expanded_native_batch_bytes  = 64U * 1024U * 1024U;
-constexpr std::size_t target_staged_native_batch_bytes = 32U * 1024U * 1024U;
-constexpr std::size_t max_staged_native_batch_bytes    = 96U * 1024U * 1024U;
-
 template <typename T>
 void append_scalar(std::string& output, T value)
 {
@@ -39,7 +35,7 @@ std::string flatten_constant(const offload::mo_native_column_view& column, std::
   if (rows != 0 && element_size > std::numeric_limits<std::uint32_t>::max() / rows) {
     throw std::overflow_error("flattened MO vector exceeds uint32");
   }
-  if (static_cast<std::size_t>(rows) * element_size > max_expanded_native_batch_bytes) {
+  if (static_cast<std::size_t>(rows) * element_size > offload::max_expanded_native_batch_bytes) {
     throw std::overflow_error("flattened MO vector exceeds the GPU scan expansion bound");
   }
 
@@ -57,7 +53,8 @@ std::string flatten_constant(const offload::mo_native_column_view& column, std::
       if (source.big_offset() > column.area.size() ||
           source.big_length() > column.area.size() - source.big_offset() ||
           (rows != 0 && source.big_length() > std::numeric_limits<std::uint32_t>::max() / rows) ||
-          static_cast<std::size_t>(rows) * source.big_length() > max_expanded_native_batch_bytes) {
+          static_cast<std::size_t>(rows) * source.big_length() >
+            offload::max_expanded_native_batch_bytes) {
         throw std::invalid_argument("constant MO varlena exceeds its area or the flattened format");
       }
       for (std::uint32_t row = 0; row < rows; ++row) {
@@ -192,7 +189,7 @@ std::unique_ptr<operator_data> mo_native_scan_task::compute_task(rmm::cuda_strea
   std::size_t bytes      = 0;
   std::size_t total_rows = 0;
   bool eof               = false;
-  while (bytes < target_staged_native_batch_bytes) {
+  while (bytes < offload::target_staged_native_batch_bytes) {
     auto input = op.source->next_batch();
     if (!input) {
       eof = true;
@@ -226,8 +223,8 @@ std::unique_ptr<operator_data> mo_native_scan_task::compute_task(rmm::cuda_strea
         throw std::invalid_argument("GPU MO scan received an unsupported MatrixOne vector class");
       }
       input_bytes += encoded.size();
-      if (input_bytes > max_expanded_native_batch_bytes ||
-          bytes > max_staged_native_batch_bytes - input_bytes) {
+      if (input_bytes > offload::max_expanded_native_batch_bytes ||
+          bytes > offload::max_staged_native_batch_bytes - input_bytes) {
         throw std::overflow_error("MO native batch exceeds the GPU scan staging bound");
       }
       const auto null_count = column.vector_class == 1 && (column.data.empty() || column.is_null(0))
@@ -312,9 +309,10 @@ void mo_native_scan_task::publish_output(operator_data& output_data,
 
 std::size_t mo_native_scan_task::get_estimated_reservation_size() const
 {
-  // The wire contract currently bounds each upload at 4 MiB. The converter's
-  // uncompressed requirement is recorded in the representation once received.
-  return 4U * 1024U * 1024U;
+  // Reserve for the expanded/coalesced pinned-host representation, not merely
+  // the compressed 4 MiB wire frame. Under-reserving here lets concurrent
+  // StreamRead tasks exceed Sirius's host-memory admission limit.
+  return _local_state->cast<mo_native_scan_task_local_state>().get_task_consumption_basis();
 }
 
 std::vector<sirius_physical_operator*> mo_native_scan_task::get_output_consumers()

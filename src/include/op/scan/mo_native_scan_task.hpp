@@ -6,6 +6,7 @@
 #pragma once
 
 #include "data/host_tae_representation.hpp"
+#include "offload/mo_native_limits.hpp"
 #include "op/sirius_physical_gpu_mo_scan.hpp"
 #include "pipeline/sirius_pipeline_itask.hpp"
 #include "pipeline/sirius_pipeline_task_states.hpp"
@@ -47,7 +48,7 @@ class mo_native_scan_task_local_state final : public pipeline::sirius_pipeline_t
  public:
   [[nodiscard]] std::size_t get_task_consumption_basis() const override
   {
-    return 4U * 1024U * 1024U;
+    return offload::mo_native_scan_reservation_bytes();
   }
 };
 

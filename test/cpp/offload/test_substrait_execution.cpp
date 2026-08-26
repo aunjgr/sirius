@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include "offload/mo_native_limits.hpp"
 #include "offload/substrait_execution.hpp"
 #include "substrait/plan.pb.h"
 
@@ -245,6 +246,13 @@ void require_error(const std::string& plan,
 }
 
 }  // namespace
+
+TEST_CASE("MO native scan reserves its expanded staging bound", "[substrait_contract]")
+{
+  REQUIRE(sirius::offload::mo_native_scan_reservation_bytes() ==
+          sirius::offload::max_staged_native_batch_bytes);
+  REQUIRE(sirius::offload::max_staged_native_batch_bytes == 96U * 1024U * 1024U);
+}
 
 TEST_CASE("Substrait TaeRead is authenticated and rewritten without execution",
           "[substrait_contract]")

@@ -9,6 +9,7 @@
 
 #include <duckdb/function/function.hpp>
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string_view>
@@ -27,7 +28,18 @@ struct mo_native_column_view {
   std::uint64_t null_count = 0;
   bool sorted              = false;
 
-  [[nodiscard]] bool is_null(std::uint64_t row) const noexcept;
+  [[nodiscard]] bool is_null(std::uint64_t row) const noexcept
+  {
+    if (null_count == 0 || null_words.empty()) { return false; }
+    const auto offset = static_cast<std::size_t>(row / 64U) * sizeof(std::uint64_t);
+    if (offset + sizeof(std::uint64_t) > null_words.size()) { return false; }
+    std::uint64_t word = 0;
+    for (unsigned i = 0; i < sizeof(std::uint64_t); ++i) {
+      word |= static_cast<std::uint64_t>(static_cast<unsigned char>(null_words[offset + i]))
+              << (i * 8U);
+    }
+    return (word & (std::uint64_t{1} << (row % 64U))) != 0;
+  }
 };
 
 class mo_native_batch {

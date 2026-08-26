@@ -17,22 +17,28 @@ DUCKDB_DIR ?= duckdb
 TEST_BUILD_TARGET ?= sirius_unittest
 MAIN_BUILD_TARGETS ?= duckdb duckdb_local_extension_repo
 
-.PHONY: all release debug reldebug relwithdebinfo debug-release \
+.PHONY: all prepare release debug reldebug relwithdebinfo debug-release \
 	legacy-release \
 	clang-release clang-debug clang-relwithdebinfo \
 	ci-release configure_ci set_duckdb_version \
 	test test_release test_debug test_reldebug test_ci-release clean list-presets
 
-PRESETS_LINK := $(DUCKDB_DIR)/CMakePresets.json
+PRESETS_LINK := $(DUCKDB_DIR)/CMakeUserPresets.json
+PINNED_DUCKDB_DIR := substrait/duckdb
 
 # Inputs that should trigger a CMake re-configure
 CMAKE_INPUTS := cmake/CMakePresets.json CMakeLists.txt extension_config.cmake $(wildcard cmake/*.cmake)
 
 all: release
 
-$(PRESETS_LINK): cmake/CMakePresets.json
-	rm -f $(DUCKDB_DIR)/CMakeUserPresets.json
-	ln -sf ../cmake/CMakePresets.json $@
+prepare: $(PRESETS_LINK)
+
+$(DUCKDB_DIR):
+	@test -d $(PINNED_DUCKDB_DIR) || { echo "initialize recursive submodules first" >&2; exit 1; }
+	ln -s $(PINNED_DUCKDB_DIR) $@
+
+$(PRESETS_LINK): cmake/CMakePresets.json | $(DUCKDB_DIR)
+	ln -sf $(abspath cmake/CMakePresets.json) $@
 
 # Configure step — only re-runs when cmake inputs change
 build/%/build.ninja: $(CMAKE_INPUTS) | $(PRESETS_LINK)

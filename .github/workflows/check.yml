@@ -123,6 +123,7 @@ jobs:
       - name: Build (vcpkg)
         if: matrix.environment == 'vcpkg'
         run: |
+          make prepare
           pixi run -e vcpkg cmake -S duckdb --preset vcpkg-release
           pixi run -e vcpkg cmake --build build/vcpkg-release --target duckdb duckdb_local_extension_repo sirius_unittest
 
