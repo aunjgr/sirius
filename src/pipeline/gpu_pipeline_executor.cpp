@@ -169,27 +169,22 @@ void gpu_pipeline_executor::manager_loop()
         }
         break;
       }
-      if (reservation->size() < bytes_needs) {
-        SIRIUS_LOG_WARN(
-          "GPU Pipeline Executor: after downgrade ({} bytes freed), reservation "
-          "still partial ({}/{} bytes) for pipeline {} task {} -- proceeding "
-          "with partial reservation",
-          freed,
-          reservation->size(),
-          bytes_needs,
-          gpu_task->get_pipeline_id(),
-          gpu_task->get_task_id());
-      }
-    } else if (reservation->size() < bytes_needs) {
-      // No downgrade executor available -- warn and proceed (this should never happen)
-      SIRIUS_LOG_WARN(
-        "GPU Pipeline Executor: Acquired memory reservation does not match "
-        "requested size for pipeline {} of {} bytes needed for task "
-        "{}. Reservation size: {}. WARNING: Downgrade executor is not available",
+    }
+    if (reservation->size() < bytes_needs) {
+      SIRIUS_LOG_ERROR(
+        "GPU Pipeline Executor: refusing partial reservation for pipeline {} task {} "
+        "({}/{} bytes)",
         gpu_task->get_pipeline_id(),
-        bytes_needs,
         gpu_task->get_task_id(),
-        reservation->size());
+        reservation->size(),
+        bytes_needs);
+      if (_completion_handler) {
+        _completion_handler->report_error(
+          "GPU Pipeline Executor: insufficient reservation for pipeline " +
+          std::to_string(gpu_task->get_pipeline_id()) + " task " +
+          std::to_string(gpu_task->get_task_id()));
+      }
+      break;
     }
     if (auto* local_state = dynamic_cast<sirius::pipeline::sirius_pipeline_task_local_state*>(
           gpu_task->local_state())) {
