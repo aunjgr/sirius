@@ -17,6 +17,8 @@
 #include <duckdb/planner/binder.hpp>
 #include <duckdb/planner/bound_statement.hpp>
 
+#include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <limits>
 #include <unordered_map>
@@ -30,13 +32,19 @@ namespace {
 using protobuf_message = ::duckdb::google::protobuf::Message;
 
 [[noreturn]] void fail(substrait_error_code code, const std::string& message)
-{ throw substrait_execution_error(code, message); }
+{
+  throw substrait_execution_error(code, message);
+}
 
 [[noreturn]] void invalid(const std::string& message)
-{ fail(substrait_error_code::INVALID_PLAN, message); }
+{
+  fail(substrait_error_code::INVALID_PLAN, message);
+}
 
 [[noreturn]] void unsupported(const std::string& message)
-{ fail(substrait_error_code::UNSUPPORTED_PLAN, message); }
+{
+  fail(substrait_error_code::UNSUPPORTED_PLAN, message);
+}
 
 std::uint64_t system_now_unix_ms()
 {
@@ -424,9 +432,41 @@ class plan_validator {
             "deprecated arguments, options, or missing scalar output types are unsupported");
         }
         validate_type(function.output_type());
+        std::size_t value_arguments = 0;
+        std::size_t enum_arguments  = 0;
         for (const auto& argument : function.arguments()) {
-          if (!argument.has_value()) { unsupported("only value function arguments are supported"); }
-          validate_expression(argument.value());
+          if (argument.has_value()) {
+            ++value_arguments;
+            validate_expression(argument.value());
+          } else if (argument.has_enum_() &&
+                     function_name(function.function_reference()) == "extract") {
+            static const std::unordered_set<std::string> extract_fields = {"year",
+                                                                           "month",
+                                                                           "day",
+                                                                           "decade",
+                                                                           "century",
+                                                                           "millenium",
+                                                                           "quarter",
+                                                                           "microsecond",
+                                                                           "milliseconds",
+                                                                           "second",
+                                                                           "minute",
+                                                                           "hour"};
+            auto field                                                  = argument.enum_();
+            std::transform(field.begin(), field.end(), field.begin(), [](unsigned char value) {
+              return static_cast<char>(std::tolower(value));
+            });
+            if (extract_fields.count(field) == 0) {
+              unsupported("unsupported extract enum argument");
+            }
+            ++enum_arguments;
+          } else {
+            unsupported("only value arguments and extract enum arguments are supported");
+          }
+        }
+        if (function_name(function.function_reference()) == "extract" &&
+            (value_arguments != 1 || enum_arguments != 1)) {
+          unsupported("extract requires one enum field and one value argument");
         }
         break;
       }
@@ -769,7 +809,9 @@ substrait_execution::substrait_execution(
 }
 
 bool substrait_execution::transition(execution_state expected, execution_state desired) noexcept
-{ return state_.compare_exchange_strong(expected, desired); }
+{
+  return state_.compare_exchange_strong(expected, desired);
+}
 
 void substrait_execution::release_resolutions() noexcept
 {
@@ -802,6 +844,61 @@ void substrait_execution::run(const chunk_consumer& consumer)
       context_, "[matrixone substrait offload]", prepared_, [this, &consumer](const auto& chunk) {
         if (cancel_requested_.load()) { return false; }
         if (consumer(chunk) == chunk_action::CANCEL) {
+          cancel_requested_.store(true);
+          return false;
+        }
+        return !cancel_requested_.load();
+      });
+    if (cancel_requested_.load()) {
+      fail(substrait_error_code::CANCELLED, "Substrait execution was cancelled");
+    }
+    (void)transition(execution_state::RUNNING, execution_state::SUCCEEDED);
+    release_resolutions();
+  } catch (const substrait_execution_error& error) {
+    (void)transition(execution_state::RUNNING,
+                     error.code() == substrait_error_code::CANCELLED ? execution_state::CANCELLED
+                                                                     : execution_state::FAILED);
+    release_resolutions();
+    throw;
+  } catch (const std::exception& error) {
+    const bool cancelled = cancel_requested_.load();
+    (void)transition(execution_state::RUNNING,
+                     cancelled ? execution_state::CANCELLED : execution_state::FAILED);
+    release_resolutions();
+    fail(cancelled ? substrait_error_code::CANCELLED : substrait_error_code::EXECUTION_FAILED,
+         cancelled ? "Substrait execution was cancelled"
+                   : std::string("Sirius execution failed: ") + error.what());
+  } catch (...) {
+    const bool cancelled = cancel_requested_.load();
+    (void)transition(execution_state::RUNNING,
+                     cancelled ? execution_state::CANCELLED : execution_state::FAILED);
+    release_resolutions();
+    fail(cancelled ? substrait_error_code::CANCELLED : substrait_error_code::EXECUTION_FAILED,
+         cancelled ? "Substrait execution was cancelled" : "Sirius execution failed");
+  }
+}
+
+void substrait_execution::run_batches(const batch_consumer& consumer)
+{
+  if (!consumer) { invalid("Substrait execution requires a batch consumer"); }
+  if (!transition(execution_state::PREPARED, execution_state::RUNNING)) {
+    if (state() == execution_state::CANCELLED) {
+      fail(substrait_error_code::CANCELLED, "Substrait execution was cancelled before start");
+    }
+    fail(substrait_error_code::EXECUTION_FAILED, "Substrait execution handles are single-use");
+  }
+  try {
+    if (cancel_requested_.load()) {
+      fail(substrait_error_code::CANCELLED, "Substrait execution was cancelled before start");
+    }
+    sirius_interface interface(context_, evidence_);
+    interface.sirius_execute_batch_streaming(
+      context_,
+      "[matrixone substrait offload]",
+      prepared_,
+      [this, &consumer](const auto& batch, auto stream) {
+        if (cancel_requested_.load()) { return false; }
+        if (consumer(batch, stream) == chunk_action::CANCEL) {
           cancel_requested_.store(true);
           return false;
         }

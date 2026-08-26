@@ -126,7 +126,9 @@ class fake_resolution final : public resolved_tae_read {
   const std::string& relation_name() const noexcept override { return relation_name_; }
   const ::substrait::NamedStruct& canonical_schema() const noexcept override { return schema_; }
   const std::string& read_ref() const noexcept override
-  { return read_ref_mismatch_ ? bad_read_ref_ : read_ref_; }
+  {
+    return read_ref_mismatch_ ? bad_read_ref_ : read_ref_;
+  }
   const std::string& query_id() const noexcept override { return query_id_; }
   std::uint64_t account_id() const noexcept override { return account_id_; }
   std::uint64_t database_id() const noexcept override { return database_id_mismatch_ ? 22 : 21; }
@@ -135,7 +137,9 @@ class fake_resolution final : public resolved_tae_read {
   const std::string& schema_digest() const noexcept override { return schema_digest_; }
   const std::string& manifest_sha256() const noexcept override { return manifest_sha256_; }
   const std::string& capability_hash() const noexcept override
-  { return capability_mismatch_ ? bad_capability_hash_ : capability_hash_; }
+  {
+    return capability_mismatch_ ? bad_capability_hash_ : capability_hash_;
+  }
   std::uint64_t expires_at_unix_ms() const noexcept override { return 2000; }
 
  private:
@@ -168,7 +172,9 @@ class fake_stream_resolution final : public resolved_stream_read {
   const std::string& relation_name() const noexcept override { return relation_name_; }
   const ::substrait::NamedStruct& canonical_schema() const noexcept override { return schema_; }
   const std::string& stream_ref() const noexcept override
-  { return mismatch_ ? bad_stream_ref_ : stream_ref_; }
+  {
+    return mismatch_ ? bad_stream_ref_ : stream_ref_;
+  }
   const std::string& query_id() const noexcept override { return query_id_; }
   std::uint64_t account_id() const noexcept override { return 42; }
   const std::string& snapshot_ts() const noexcept override { return snapshot_ts_; }
@@ -486,6 +492,34 @@ TEST_CASE("TPC-H conditional, IN-list, and decimal expressions are admitted",
     plan.SerializeAsString(), resolver, 1000);
   REQUIRE(resolver.calls == 1);
   REQUIRE(validated.resolutions.size() == 1);
+}
+
+TEST_CASE("TPC-H extract admits one validated enum field", "[substrait_contract]")
+{
+  fake_resolver resolver;
+  auto plan         = make_read_plan(make_tae_read());
+  auto* declaration = plan.add_extensions()->mutable_extension_function();
+  declaration->set_function_anchor(1);
+  declaration->set_name("extract");
+
+  auto* root    = plan.mutable_relations(0)->mutable_root();
+  auto input    = root->input();
+  auto* project = root->mutable_input()->mutable_project();
+  project->mutable_input()->CopyFrom(input);
+  project->mutable_common()->mutable_emit()->add_output_mapping(1);
+  auto* extract = project->add_expressions()->mutable_scalar_function();
+  extract->set_function_reference(1);
+  extract->add_arguments()->set_enum_("year");
+  extract->add_arguments()->mutable_value()->mutable_literal()->set_date(0);
+  extract->mutable_output_type()->mutable_i64();
+
+  auto validated = sirius::offload::detail::validate_and_resolve_substrait(
+    plan.SerializeAsString(), resolver, 1000);
+  REQUIRE(resolver.calls == 1);
+  REQUIRE(validated.resolutions.size() == 1);
+
+  extract->mutable_arguments(0)->set_enum_("timezone_hour");
+  require_error(plan.SerializeAsString(), resolver, substrait_error_code::UNSUPPORTED_PLAN, true);
 }
 
 TEST_CASE("malformed and unknown Substrait input is rejected as invalid", "[substrait_contract]")

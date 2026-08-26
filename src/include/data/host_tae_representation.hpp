@@ -138,15 +138,16 @@ class host_tae_representation : public cucascade::idata_representation {
    * @brief Metadata for a single column chunk within this representation.
    */
   struct column_chunk_info {
-    uint16_t column_idx;        ///< Column ordinal in the TAE object
-    tae::MOTypeOid type_oid;    ///< MO type for decode
-    int32_t width;              ///< DECIMAL precision
-    int32_t scale;              ///< DECIMAL scale
-    tae::Extent extent;         ///< Compressed data location
-    uint32_t null_cnt;          ///< Number of nulls in this chunk
-    uint32_t row_count;         ///< Number of rows in the block
-    std::size_t pinned_offset;  ///< Byte offset into host buffer
-    std::size_t pinned_length;  ///< Byte count in host buffer (compressed)
+    uint16_t column_idx;                    ///< Column ordinal in the TAE object
+    tae::MOTypeOid type_oid;                ///< MO type for decode
+    int32_t width;                          ///< DECIMAL precision
+    int32_t scale;                          ///< DECIMAL scale
+    tae::Extent extent;                     ///< Compressed data location
+    uint32_t null_cnt;                      ///< Number of nulls in this chunk
+    uint32_t row_count;                     ///< Number of rows in the block
+    std::size_t pinned_offset;              ///< Byte offset into host buffer
+    std::size_t pinned_length;              ///< Byte count in host buffer (compressed)
+    std::uint32_t vector_header_size = 29;  ///< Offset from decoded chunk to vector data
   };
 
   /**

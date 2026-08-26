@@ -197,6 +197,19 @@ sirius_physical_streaming_collector::sirius_physical_streaming_collector(
   if (!callback_) { throw invalid_input_exception("streaming result callback is required"); }
 }
 
+sirius_physical_streaming_collector::sirius_physical_streaming_collector(
+  ::sirius::sirius_prepared_statement_data& data,
+  duckdb::ClientContext& client_ctx,
+  result_batch_callback callback)
+  : sirius_physical_result_collector(data),
+    client_ctx_(client_ctx),
+    batch_callback_(std::move(callback))
+{
+  if (!batch_callback_) {
+    throw invalid_input_exception("streaming result batch callback is required");
+  }
+}
+
 duckdb::unique_ptr<duckdb::QueryResult> sirius_physical_streaming_collector::get_result()
 {
   throw internal_exception("streaming result collector cannot materialize a QueryResult");
@@ -207,6 +220,15 @@ void sirius_physical_streaming_collector::sink(const operator_data& input_data,
 {
   nvtx3::scoped_range nvtx_range{"sirius_physical_streaming_collector::sink"};
   std::lock_guard<std::mutex> guard(lock);
+  if (batch_callback_) {
+    auto& input = dynamic_cast<const pipelineable_operator_data&>(input_data);
+    for (const auto& batch : input.get_data_batches()) {
+      if (!batch_callback_(batch, stream)) {
+        throw invalid_input_exception("streaming result consumer cancelled execution");
+      }
+    }
+    return;
+  }
   visit_result_chunks(client_ctx_, types, input_data, stream, [this](duckdb::DataChunk& chunk) {
     if (!callback_(chunk)) {
       throw invalid_input_exception("streaming result consumer cancelled execution");

@@ -25,6 +25,7 @@
 #include "data/host_parquet_representation.hpp"
 #include "log/logging.hpp"
 #include "op/scan/cpu_source_task.hpp"
+#include "op/scan/mo_native_scan_task.hpp"
 #include "op/scan/parquet_scan_task.hpp"
 #include "op/scan/tae_scan_task.hpp"
 #include "op/sirius_physical_operator.hpp"
@@ -173,9 +174,10 @@ std::unique_ptr<op::operator_data> duckdb_scan_executor::get_scan_output(
   bool is_parquet_scan = !is_duckdb_scan and dynamic_cast<parquet_scan_task*>(task) != nullptr;
   bool is_cpu_source =
     !is_duckdb_scan && !is_parquet_scan && dynamic_cast<cpu_source_task*>(task) != nullptr;
+  bool is_mo_native = dynamic_cast<mo_native_scan_task*>(task) != nullptr;
 
-  // CPU source tasks always compute directly (small data, no caching)
-  if (is_cpu_source) { return task->compute_task(stream); }
+  // CPU and one-pass MO-native sources always compute directly (no caching).
+  if (is_cpu_source || is_mo_native) { return task->compute_task(stream); }
 
   auto clone_batches = [&](const std::vector<std::shared_ptr<cucascade::data_batch>>& batches,
                            rmm::cuda_stream_view stream) {
@@ -253,9 +255,10 @@ void duckdb_scan_executor::manager_loop()
       }
     }
 
-    auto* scan_task = dynamic_cast<pipeline::sirius_pipeline_itask*>(task.get());
-    bool is_parquet = scan_task && scan_task->is<parquet_scan_task>();
-    bool is_tae     = scan_task && scan_task->is<tae_scan_task>();
+    auto* scan_task   = dynamic_cast<pipeline::sirius_pipeline_itask*>(task.get());
+    bool is_parquet   = scan_task && scan_task->is<parquet_scan_task>();
+    bool is_tae       = scan_task && scan_task->is<tae_scan_task>();
+    bool is_mo_native = scan_task && scan_task->is<mo_native_scan_task>();
 
     // Parquet-specific: configure scan caching options
     if (is_parquet) {
@@ -269,7 +272,7 @@ void duckdb_scan_executor::manager_loop()
     }
 
     // Request host memory reservation for scan tasks (parquet + TAE)
-    if (is_parquet || is_tae) {
+    if (is_parquet || is_tae || is_mo_native) {
       auto bytes_needed = scan_task->get_estimated_reservation_size();
       auto reservation  = _mem_mgr->request_reservation(
         cucascade::memory::any_memory_space_in_tier{cucascade::memory::Tier::HOST}, bytes_needed);
@@ -297,17 +300,25 @@ void duckdb_scan_executor::manager_loop()
       [this,
        stream    = std::move(exc_stream),
        t         = std::move(task),
-       scan_task = std::move(scan_task)]() mutable {
+       scan_task = std::move(scan_task),
+       is_mo_native]() mutable {
         try {
           auto consumers = scan_task->get_output_consumers();
           {
             auto output_data = get_scan_output(scan_task, stream);
             stream->synchronize();
-            scan_task->publish_output(*output_data, stream);
+            if (output_data) { scan_task->publish_output(*output_data, stream); }
           }
 
           t.reset();
-          if (_task_creator && !(_completion_handler && _completion_handler->is_completed())) {
+          const bool completed = _completion_handler && _completion_handler->is_completed();
+          if (is_mo_native) {
+            SIRIUS_LOG_DEBUG(
+              "[mo_native_scan] scan task published; consumers={}, query_completed={}",
+              consumers.size(),
+              completed);
+          }
+          if (_task_creator && !completed) {
             for (auto* consumer : consumers) {
               _task_creator->schedule(consumer);
             }

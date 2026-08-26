@@ -196,6 +196,7 @@ set(EXTENSION_SOURCES
     src/op/scan/iceberg_delete_pipeline.cpp
     src/op/scan/iceberg_metadata_reader.cpp
     src/op/scan/iceberg_scan_task.cpp
+    src/op/scan/mo_native_scan_task.cpp
     src/op/scan/positional_delete_filter.cpp
     src/op/scan/puffin_reader.cpp
     src/op/scan/parquet_scan_task.cpp
@@ -217,6 +218,7 @@ set(EXTENSION_SOURCES
     src/op/sirius_physical_empty_result.cpp
     src/op/sirius_physical_filter.cpp
     src/op/sirius_physical_gpu_tae_scan.cpp
+    src/op/sirius_physical_gpu_mo_scan.cpp
     src/op/sirius_physical_grouped_aggregate.cpp
     src/op/sirius_physical_grouped_aggregate_merge.cpp
     src/op/sirius_physical_hash_join.cpp
@@ -281,7 +283,7 @@ set(EXTENSION_SOURCES
 # Legacy Sirius — all legacy-specific config lives in src/legacy/CMakeLists.txt.
 # Deleting src/legacy/ cleanly removes legacy build support.
 set(CUDA_SOURCES
-    src/op/scan/equality_delete_mask.cu src/cuda/tae/tae_decode_fixed.cu
+    src/op/scan/equality_delete_mask.cu src/cuda/mo_native_result_pack.cu src/cuda/tae/tae_decode_fixed.cu
     src/cuda/tae/tae_decode_varchar.cu src/cuda/tae/tae_null_mask.cu)
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/legacy/CMakeLists.txt")
   add_subdirectory(src/legacy)

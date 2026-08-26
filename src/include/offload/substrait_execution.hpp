@@ -8,6 +8,9 @@
 #include "execution/sirius_execution_evidence.hpp"
 #include "offload/tae_read_resolver.hpp"
 
+#include <rmm/cuda_stream_view.hpp>
+
+#include <cucascade/data/data_batch.hpp>
 #include <duckdb/common/types.hpp>
 #include <duckdb/common/types/data_chunk.hpp>
 #include <duckdb/main/client_context.hpp>
@@ -54,7 +57,9 @@ class substrait_execution_error final : public std::runtime_error {
 
   [[nodiscard]] substrait_error_code code() const noexcept { return code_; }
   [[nodiscard]] bool fallback_eligible() const noexcept
-  { return code_ == substrait_error_code::UNSUPPORTED_PLAN; }
+  {
+    return code_ == substrait_error_code::UNSUPPORTED_PLAN;
+  }
 
  private:
   substrait_error_code code_;
@@ -62,6 +67,8 @@ class substrait_execution_error final : public std::runtime_error {
 
 enum class chunk_action : std::uint8_t { CONTINUE = 0, CANCEL };
 using chunk_consumer = std::function<chunk_action(const duckdb::DataChunk&)>;
+using batch_consumer =
+  std::function<chunk_action(const std::shared_ptr<cucascade::data_batch>&, rmm::cuda_stream_view)>;
 
 struct execution_schema {
   duckdb::vector<std::string> names;
@@ -96,6 +103,7 @@ class substrait_execution final {
 
   void cancel() noexcept;
   void run(const chunk_consumer& consumer);
+  void run_batches(const batch_consumer& consumer);
 
  private:
   bool transition(execution_state expected, execution_state desired) noexcept;

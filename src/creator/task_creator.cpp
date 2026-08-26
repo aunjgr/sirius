@@ -21,10 +21,12 @@
 #include "op/scan/duckdb_scan_executor.hpp"
 #include "op/scan/duckdb_scan_task.hpp"
 #include "op/scan/iceberg_scan_task.hpp"
+#include "op/scan/mo_native_scan_task.hpp"
 #include "op/scan/parquet_scan_task.hpp"
 #include "op/scan/tae_scan_task.hpp"
 #include "op/sirius_physical_delim_join.hpp"
 #include "op/sirius_physical_duckdb_scan.hpp"
+#include "op/sirius_physical_gpu_mo_scan.hpp"
 #include "op/sirius_physical_gpu_tae_scan.hpp"
 #include "op/sirius_physical_iceberg_scan.hpp"
 #include "op/sirius_physical_parquet_scan.hpp"
@@ -71,6 +73,7 @@ void task_creator::prepare_for_query(const sirius::planner::query& query)
   std::lock_guard<std::mutex> lock(_global_state_mutex);
 
   _scan_operator_global_state_map.clear();
+  _mo_native_scan_operator_global_state_map.clear();
   _gpu_operator_global_state_map.clear();
 
   const auto& pipelines = query.get_pipelines();
@@ -140,14 +143,26 @@ void task_creator::prepare_for_query(const sirius::planner::query& query)
             const_cast<cucascade::memory::memory_space*>(host_spaces[0]),
             op_params.scan_task_batch_size));
       }
+    } else if (source_operator->type == ::sirius::op::SiriusPhysicalOperatorType::GPU_MO_SCAN) {
+      auto host_spaces = _mem_res_mgr.get_memory_spaces_for_tier(cucascade::memory::Tier::HOST);
+      if (host_spaces.empty()) {
+        throw std::runtime_error("[task_creator] No HOST memory space configured for GPU MO scan");
+      }
+      _mo_native_scan_operator_global_state_map.emplace(
+        operator_id,
+        std::make_shared<op::scan::mo_native_scan_task_global_state>(
+          pipeline,
+          &source_operator->Cast<op::sirius_physical_gpu_mo_scan>(),
+          *_client_context,
+          const_cast<cucascade::memory::memory_space*>(host_spaces[0])));
     } else {
       auto gs = std::make_shared<pipeline::gpu_pipeline_task_global_state>(pipeline);
       _gpu_operator_global_state_map.emplace(operator_id, std::move(gs));
     }
   }
-  _num_scans_in_plan = _scan_operator_global_state_map.size() +
-                       _parquet_scan_operator_global_state_map.size() +
-                       _tae_scan_operator_global_state_map.size();
+  _num_scans_in_plan =
+    _scan_operator_global_state_map.size() + _parquet_scan_operator_global_state_map.size() +
+    _tae_scan_operator_global_state_map.size() + _mo_native_scan_operator_global_state_map.size();
 }
 
 void task_creator::drain_pending_tasks()
@@ -162,6 +177,7 @@ void task_creator::reset(bool keep_parquet_metadata)
 {
   std::lock_guard<std::mutex> lock(_global_state_mutex);
   _scan_operator_global_state_map.clear();
+  _mo_native_scan_operator_global_state_map.clear();
   if (!keep_parquet_metadata) { _parquet_scan_operator_global_state_map.clear(); }
   _tae_scan_operator_global_state_map.clear();
   _gpu_operator_global_state_map.clear();
@@ -408,6 +424,21 @@ void task_creator::manager_loop()
                                                                   *_client_context);
           SIRIUS_LOG_DEBUG("Task Creator: scheduling cpu_source_task, dest_repos={}",
                            destination_data_repositories.size());
+          _task_scheduler->schedule(std::move(task));
+        } else if (node->type == ::sirius::op::SiriusPhysicalOperatorType::GPU_MO_SCAN) {
+          auto global = _mo_native_scan_operator_global_state_map.at(node->get_operator_id());
+          if (destination_data_repositories.empty()) {
+            throw std::runtime_error("No destination repository for GPU MO scan task creation");
+          }
+          if (!global->try_claim_task()) {
+            SIRIUS_LOG_DEBUG("[mo_native_scan] skipped duplicate native scan task request");
+            return;
+          }
+          SIRIUS_LOG_DEBUG("[mo_native_scan] creating native scan task");
+          pipeline->mark_task_created();
+          auto local = std::make_unique<op::scan::mo_native_scan_task_local_state>();
+          auto task  = std::make_unique<op::scan::mo_native_scan_task>(
+            get_next_task_id(), destination_data_repositories[0], std::move(local), global);
           _task_scheduler->schedule(std::move(task));
         } else if (node->type == ::sirius::op::SiriusPhysicalOperatorType::GPU_TAE_SCAN) {
           size_t operator_id         = node->get_operator_id();
