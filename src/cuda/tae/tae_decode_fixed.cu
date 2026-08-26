@@ -71,8 +71,7 @@ __global__ void batched_memcpy_kernel(const BatchedFixedDesc* __restrict__ descs
   auto* src_base   = desc.src;
   auto* dst_base   = dst + static_cast<std::size_t>(desc.row_offset) * elem_size;
 
-  for (uint32_t i = blockIdx.x * blockDim.x + threadIdx.x; i < bytes;
-       i += gridDim.x * blockDim.x) {
+  for (uint32_t i = blockIdx.x * blockDim.x + threadIdx.x; i < bytes; i += gridDim.x * blockDim.x) {
     dst_base[i] = src_base[i];
   }
 }

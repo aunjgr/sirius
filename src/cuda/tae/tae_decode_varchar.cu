@@ -214,8 +214,8 @@ void batched_decode_varchar_offsets(const BatchedVarcharDesc* d_descs,
   if (n_descs > 0 && max_block_rows > 0) {
     uint32_t grid_x = (max_block_rows + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
     dim3 grid(grid_x, n_descs);
-    batched_compute_lengths_kernel<<<grid, THREADS_PER_BLOCK, 0, stream.value()>>>(
-      d_descs, d_offsets);
+    batched_compute_lengths_kernel<<<grid, THREADS_PER_BLOCK, 0, stream.value()>>>(d_descs,
+                                                                                   d_offsets);
   }
 
   // Step 2: Single CUB ExclusiveSum over ALL rows → globally monotonic offsets

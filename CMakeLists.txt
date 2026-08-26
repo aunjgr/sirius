@@ -283,8 +283,9 @@ set(EXTENSION_SOURCES
 # Legacy Sirius — all legacy-specific config lives in src/legacy/CMakeLists.txt.
 # Deleting src/legacy/ cleanly removes legacy build support.
 set(CUDA_SOURCES
-    src/op/scan/equality_delete_mask.cu src/cuda/mo_native_result_pack.cu src/cuda/tae/tae_decode_fixed.cu
-    src/cuda/tae/tae_decode_varchar.cu src/cuda/tae/tae_null_mask.cu)
+    src/op/scan/equality_delete_mask.cu src/cuda/mo_native_result_pack.cu
+    src/cuda/tae/tae_decode_fixed.cu src/cuda/tae/tae_decode_varchar.cu
+    src/cuda/tae/tae_null_mask.cu)
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/legacy/CMakeLists.txt")
   add_subdirectory(src/legacy)
   list(APPEND EXTENSION_SOURCES ${SIRIUS_LEGACY_SOURCES}
@@ -471,11 +472,13 @@ target_include_directories(
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/substrait/src/include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/substrait/third_party>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/substrait/third_party/substrait>)
-target_link_libraries(sirius_substrait_contract_unittest sirius_extension duckdb_static)
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/substrait/third_party/substrait>
+)
+target_link_libraries(sirius_substrait_contract_unittest sirius_extension
+                      duckdb_static)
 link_extension_libraries(sirius_substrait_contract_unittest "")
-target_link_options(sirius_substrait_contract_unittest
-                    PRIVATE "LINKER:--allow-multiple-definition")
+target_link_options(sirius_substrait_contract_unittest PRIVATE
+                    "LINKER:--allow-multiple-definition")
 set_target_properties(
   sirius_substrait_contract_unittest
   PROPERTIES CXX_STANDARD 20
