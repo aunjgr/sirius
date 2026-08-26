@@ -353,7 +353,10 @@ foreach(_target sirius_extension sirius_loadable_extension)
     lz4
     nvcomp)
 
-  target_link_libraries(${_target} substrait_extension)
+  # Sirius calls the TAE scanner's filter and zone-map helpers directly. Keep
+  # both extension dependencies transitive so standalone and embedding consumers
+  # do not depend on static archive order.
+  target_link_libraries(${_target} substrait_extension tae_scanner_extension)
 
   add_dependencies(${_target} duckdb_static)
 endforeach()
