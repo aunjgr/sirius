@@ -26,6 +26,7 @@
 #include "op/sirius_physical_cte.hpp"
 #include "op/sirius_physical_delim_join.hpp"
 #include "op/sirius_physical_duckdb_scan.hpp"
+#include "op/sirius_physical_gpu_mo_scan.hpp"
 #include "op/sirius_physical_gpu_tae_scan.hpp"
 #include "op/sirius_physical_grouped_aggregate.hpp"
 #include "op/sirius_physical_grouped_aggregate_merge.hpp"
@@ -235,6 +236,8 @@ duckdb::unique_ptr<op::sirius_physical_operator> sirius_engine::construct_sirius
       return construct_iceberg_scan_operator(scan_physical_op);
     } else if (scan_physical_op.function.name == "tae_scan") {
       return duckdb::make_uniq<op::sirius_physical_gpu_tae_scan>(&scan_physical_op);
+    } else if (scan_physical_op.function.name == "mo_stream_scan") {
+      return duckdb::make_uniq<op::sirius_physical_gpu_mo_scan>(&scan_physical_op);
     } else if (scan_physical_op.function.name == "seq_scan") {
       return duckdb::make_uniq<op::sirius_physical_duckdb_scan>(&scan_physical_op);
     } else {

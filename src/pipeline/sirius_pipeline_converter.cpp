@@ -249,8 +249,8 @@ void sirius_pipeline_converter::split_table_scan_source(
     return;
   }
 
-  if (scan_op.function.name == "seq_scan" || scan_op.function.name == "iceberg_scan" ||
-      scan_op.function.name == "tae_scan") {
+  if (scan_op.function.name == "seq_scan" || scan_op.function.name == "mo_stream_scan" ||
+      scan_op.function.name == "iceberg_scan" || scan_op.function.name == "tae_scan") {
     auto new_pipeline = duckdb::make_shared_ptr<sirius_pipeline>(engine_);
 
     auto new_scan_op = engine_.construct_sirius_specific_operator(&scan_op);
@@ -1000,7 +1000,8 @@ void sirius_pipeline_converter::wire_data_repositories()
     } else if (scheduled_[i]->sink->type == op::SiriusPhysicalOperatorType::DUCKDB_SCAN ||
                scheduled_[i]->sink->type == op::SiriusPhysicalOperatorType::ICEBERG_SCAN ||
                scheduled_[i]->sink->type == op::SiriusPhysicalOperatorType::CPU_SOURCE ||
-               scheduled_[i]->sink->type == op::SiriusPhysicalOperatorType::GPU_TAE_SCAN) {
+               scheduled_[i]->sink->type == op::SiriusPhysicalOperatorType::GPU_TAE_SCAN ||
+               scheduled_[i]->sink->type == op::SiriusPhysicalOperatorType::GPU_MO_SCAN) {
       for (auto const& dependent_pipeline : source_to_pipelines[scheduled_[i]->get_sink().get()]) {
         auto next_op             = dependent_pipeline->get_operators().size() == 0
                                      ? dependent_pipeline->get_sink().get()
@@ -1197,7 +1198,8 @@ void sirius_pipeline_converter::log_pipeline_debug_info() const
         }
       } else if (first_op.type == op::SiriusPhysicalOperatorType::TABLE_SCAN) {
         const auto& scan_name = first_op.Cast<op::sirius_physical_table_scan>().function.name;
-        if (scan_name != "seq_scan" && scan_name != "parquet_scan" && scan_name != "read_parquet" &&
+        if (scan_name != "seq_scan" && scan_name != "mo_stream_scan" &&
+            scan_name != "parquet_scan" && scan_name != "read_parquet" &&
             scan_name != "iceberg_scan" && scan_name != "tae_scan") {
           throw std::runtime_error("Unsupported scan function: " + scan_name);
         }
@@ -1219,6 +1221,7 @@ void sirius_pipeline_converter::log_pipeline_debug_info() const
                  first_op.type == op::SiriusPhysicalOperatorType::ICEBERG_SCAN ||
                  first_op.type == op::SiriusPhysicalOperatorType::CPU_SOURCE ||
                  first_op.type == op::SiriusPhysicalOperatorType::GPU_TAE_SCAN ||
+                 first_op.type == op::SiriusPhysicalOperatorType::GPU_MO_SCAN ||
                  first_op.type == op::SiriusPhysicalOperatorType::RESULT_COLLECTOR ||
                  first_op.type == op::SiriusPhysicalOperatorType::COLUMN_DATA_SCAN ||
                  first_op.type == op::SiriusPhysicalOperatorType::EMPTY_RESULT ||
@@ -1271,6 +1274,7 @@ void sirius_pipeline_converter::log_pipeline_debug_info() const
                  sink->type == op::SiriusPhysicalOperatorType::ICEBERG_SCAN ||
                  sink->type == op::SiriusPhysicalOperatorType::CPU_SOURCE ||
                  sink->type == op::SiriusPhysicalOperatorType::GPU_TAE_SCAN ||
+                 sink->type == op::SiriusPhysicalOperatorType::GPU_MO_SCAN ||
                  sink->type == op::SiriusPhysicalOperatorType::COLUMN_DATA_SCAN ||
                  sink->type == op::SiriusPhysicalOperatorType::EMPTY_RESULT ||
                  sink->type == op::SiriusPhysicalOperatorType::DUMMY_SCAN) {

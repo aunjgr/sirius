@@ -17,6 +17,8 @@
 #include <duckdb/planner/binder.hpp>
 #include <duckdb/planner/bound_statement.hpp>
 
+#include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <limits>
 #include <unordered_map>
@@ -113,19 +115,19 @@ class wire_reader {
   {
     std::uint64_t value = 0;
     for (unsigned shift = 0; shift < 70; shift += 7) {
-      if (offset_ == bytes_.size()) { invalid("truncated TaeRead varint"); }
+      if (offset_ == bytes_.size()) { invalid("truncated extension-read varint"); }
       const auto byte = static_cast<std::uint8_t>(bytes_[offset_++]);
-      if (shift == 63 && byte > 1) { invalid("overflowing TaeRead varint"); }
+      if (shift == 63 && byte > 1) { invalid("overflowing extension-read varint"); }
       value |= static_cast<std::uint64_t>(byte & 0x7fU) << shift;
       if ((byte & 0x80U) == 0) { return value; }
     }
-    invalid("overflowing TaeRead varint");
+    invalid("overflowing extension-read varint");
   }
 
   std::string bytes()
   {
     const auto length = varint();
-    if (length > bytes_.size() - offset_) { invalid("truncated TaeRead bytes field"); }
+    if (length > bytes_.size() - offset_) { invalid("truncated extension-read bytes field"); }
     std::string result(bytes_.substr(offset_, static_cast<std::size_t>(length)));
     offset_ += static_cast<std::size_t>(length);
     return result;
@@ -207,6 +209,70 @@ void validate_tae_read(const tae_read& request, std::uint64_t now_unix_ms)
   }
 }
 
+stream_read parse_stream_read(std::string_view bytes)
+{
+  wire_reader reader(bytes);
+  stream_read result;
+  std::uint16_t seen = 0;
+  while (!reader.done()) {
+    const auto tag       = reader.varint();
+    const auto field     = static_cast<unsigned>(tag >> 3U);
+    const auto wire_type = static_cast<unsigned>(tag & 7U);
+    if (field == 0 || field > 9) { invalid("StreamRead contains an unknown field"); }
+    const auto mask = static_cast<std::uint16_t>(1U << (field - 1U));
+    if ((seen & mask) != 0) { invalid("StreamRead contains a duplicate field"); }
+    seen |= mask;
+
+    const bool is_varint = field == 1 || field == 2 || field == 5 || field == 9;
+    if (wire_type != (is_varint ? 0U : 2U)) { invalid("StreamRead field has the wrong wire type"); }
+    switch (field) {
+      case 1: {
+        const auto value = reader.varint();
+        if (value > std::numeric_limits<std::uint32_t>::max()) {
+          invalid("StreamRead protocol_version overflows uint32");
+        }
+        result.protocol_version = static_cast<std::uint32_t>(value);
+        break;
+      }
+      case 2: result.feature_bits = reader.varint(); break;
+      case 3: result.stream_ref = reader.bytes(); break;
+      case 4: result.query_id = reader.bytes(); break;
+      case 5: result.account_id = reader.varint(); break;
+      case 6: result.snapshot_ts = reader.bytes(); break;
+      case 7: result.schema_digest = reader.bytes(); break;
+      case 8: result.capability_hash = reader.bytes(); break;
+      case 9: result.expires_at_unix_ms = reader.varint(); break;
+      default: invalid("StreamRead contains an unknown field");
+    }
+  }
+  constexpr std::uint16_t required_fields =
+    static_cast<std::uint16_t>(((1U << 9U) - 1U) & ~(1U << 1U));
+  if ((seen & required_fields) != required_fields) {
+    invalid("StreamRead is missing a required field");
+  }
+  return result;
+}
+
+void validate_stream_read(const stream_read& request, std::uint64_t now_unix_ms)
+{
+  if (request.protocol_version != k_stream_read_protocol_version) {
+    unsupported("unsupported StreamRead protocol version");
+  }
+  if (request.feature_bits != k_stream_read_feature_bits) {
+    unsupported("unsupported StreamRead feature bits");
+  }
+  if (request.stream_ref.size() != 32 || request.query_id.size() != 16) {
+    invalid("StreamRead identity fields have invalid lengths");
+  }
+  if (request.snapshot_ts.size() != 12 || request.schema_digest.size() != 32 ||
+      request.capability_hash.size() != 32) {
+    invalid("StreamRead snapshot or digest fields have invalid lengths");
+  }
+  if (request.expires_at_unix_ms == 0 || request.expires_at_unix_ms <= now_unix_ms) {
+    fail(substrait_error_code::AUTHENTICATION_FAILED, "StreamRead capability has expired");
+  }
+}
+
 void validate_type(const ::substrait::Type& type)
 {
   switch (type.kind_case()) {
@@ -259,7 +325,7 @@ class plan_validator {
   {
   }
 
-  std::vector<std::unique_ptr<resolved_tae_read>> validate()
+  std::vector<std::unique_ptr<resolved_read>> validate()
   {
     if (plan_.relations_size() == 0 || !plan_.relations(plan_.relations_size() - 1).has_root()) {
       invalid("Substrait plan requires one final root relation");
@@ -269,7 +335,7 @@ class plan_validator {
       unsupported("dynamic parameters, type aliases, and execution behaviors are not supported");
     }
     for (const auto& type_url : plan_.expected_type_urls()) {
-      if (type_url != k_tae_read_type_url) {
+      if (type_url != k_tae_read_type_url && type_url != k_stream_read_type_url) {
         unsupported("plan declares an unsupported protobuf Any type");
       }
     }
@@ -529,18 +595,42 @@ class plan_validator {
   void validate_read(::substrait::ReadRel* read)
   {
     if (!read->has_extension_table() || !read->extension_table().has_detail()) {
-      unsupported("Sirius offload reads must use an ExtensionTable TaeRead");
+      unsupported("Sirius offload reads must use an authenticated ExtensionTable read");
     }
-    if (!read->has_base_schema()) { invalid("TaeRead relation has no base schema"); }
+    if (!read->has_base_schema()) { invalid("extension read relation has no base schema"); }
     if (read->has_filter() || read->has_best_effort_filter() || read->has_projection()) {
       unsupported("read-level filters and projections are not supported; use FilterRel/ProjectRel");
     }
     validate_schema(read->base_schema());
     const auto detail = read->extension_table().detail();
-    if (detail.type_url() != k_tae_read_type_url) {
-      unsupported("ExtensionTable detail is not matrixone.sirius.v1.TaeRead");
+    if (detail.type_url() == k_tae_read_type_url) {
+      validate_tae_relation(read, detail.value());
+      return;
     }
-    auto request = parse_tae_read(detail.value());
+    if (detail.type_url() == k_stream_read_type_url) {
+      validate_stream_relation(read, detail.value());
+      return;
+    }
+    unsupported("ExtensionTable detail is outside the MatrixOne read contract");
+  }
+
+  void rewrite_read(::substrait::ReadRel* read, resolved_read& resolution)
+  {
+    if (resolution.relation_name().empty()) {
+      fail(substrait_error_code::READ_RESOLUTION_FAILED,
+           "read resolver returned no query-local relation");
+    }
+    validate_message_tree(resolution.canonical_schema());
+    validate_schema(resolution.canonical_schema());
+    read->mutable_base_schema()->CopyFrom(resolution.canonical_schema());
+    auto* named = read->mutable_named_table();
+    named->clear_names();
+    named->add_names(resolution.relation_name());
+  }
+
+  void validate_tae_relation(::substrait::ReadRel* read, std::string_view value)
+  {
+    auto request = parse_tae_read(value);
     validate_tae_read(request, now_unix_ms_);
 
     std::unique_ptr<resolved_tae_read> resolution;
@@ -554,12 +644,9 @@ class plan_validator {
     } catch (...) {
       fail(substrait_error_code::READ_RESOLUTION_FAILED, "TaeRead resolver failed");
     }
-    if (!resolution || resolution->relation_name().empty()) {
-      fail(substrait_error_code::READ_RESOLUTION_FAILED,
-           "TaeRead resolver returned no query-local relation");
+    if (!resolution) {
+      fail(substrait_error_code::READ_RESOLUTION_FAILED, "TaeRead resolver returned no resolution");
     }
-    validate_message_tree(resolution->canonical_schema());
-    validate_schema(resolution->canonical_schema());
     const bool authenticated =
       resolution->read_ref() == request.read_ref && resolution->query_id() == request.query_id &&
       resolution->account_id() == request.account_id &&
@@ -576,10 +663,45 @@ class plan_validator {
            "TaeRead resolver metadata does not match the signed request");
     }
 
-    read->mutable_base_schema()->CopyFrom(resolution->canonical_schema());
-    auto* named = read->mutable_named_table();
-    named->clear_names();
-    named->add_names(resolution->relation_name());
+    rewrite_read(read, *resolution);
+    resolutions_.push_back(std::move(resolution));
+  }
+
+  void validate_stream_relation(::substrait::ReadRel* read, std::string_view value)
+  {
+    auto request = parse_stream_read(value);
+    validate_stream_read(request, now_unix_ms_);
+
+    std::unique_ptr<resolved_stream_read> resolution;
+    try {
+      resolution = resolver_.resolve(request, read->base_schema());
+    } catch (const substrait_execution_error&) {
+      throw;
+    } catch (const std::exception& error) {
+      fail(substrait_error_code::READ_RESOLUTION_FAILED,
+           std::string("StreamRead resolver failed: ") + error.what());
+    } catch (...) {
+      fail(substrait_error_code::READ_RESOLUTION_FAILED, "StreamRead resolver failed");
+    }
+    if (!resolution) {
+      fail(substrait_error_code::READ_RESOLUTION_FAILED,
+           "StreamRead resolver returned no resolution");
+    }
+    const bool authenticated =
+      resolution->stream_ref() == request.stream_ref &&
+      resolution->query_id() == request.query_id &&
+      resolution->account_id() == request.account_id &&
+      resolution->snapshot_ts() == request.snapshot_ts &&
+      resolution->schema_digest() == request.schema_digest &&
+      resolution->capability_hash() == request.capability_hash &&
+      resolution->expires_at_unix_ms() == request.expires_at_unix_ms &&
+      resolution->canonical_schema().SerializeAsString() == read->base_schema().SerializeAsString();
+    if (!authenticated) {
+      fail(substrait_error_code::AUTHENTICATION_FAILED,
+           "StreamRead resolver metadata does not match the signed request");
+    }
+
+    rewrite_read(read, *resolution);
     resolutions_.push_back(std::move(resolution));
   }
 
@@ -653,7 +775,7 @@ class plan_validator {
   tae_read_resolver& resolver_;
   std::uint64_t now_unix_ms_;
   std::unordered_map<std::uint32_t, std::string> functions_;
-  std::vector<std::unique_ptr<resolved_tae_read>> resolutions_;
+  std::vector<std::unique_ptr<resolved_read>> resolutions_;
   std::uint32_t current_relation_ordinal_ = 0;
 };
 
@@ -669,7 +791,7 @@ substrait_execution::substrait_execution(
   duckdb::shared_ptr<sirius_prepared_statement_data> prepared,
   execution_schema schema,
   std::shared_ptr<execution_evidence> evidence,
-  std::vector<std::unique_ptr<resolved_tae_read>> resolutions)
+  std::vector<std::unique_ptr<resolved_read>> resolutions)
   : context_(context),
     prepared_(std::move(prepared)),
     schema_(std::move(schema)),
@@ -714,6 +836,61 @@ void substrait_execution::run(const chunk_consumer& consumer)
       context_, "[matrixone substrait offload]", prepared_, [this, &consumer](const auto& chunk) {
         if (cancel_requested_.load()) { return false; }
         if (consumer(chunk) == chunk_action::CANCEL) {
+          cancel_requested_.store(true);
+          return false;
+        }
+        return !cancel_requested_.load();
+      });
+    if (cancel_requested_.load()) {
+      fail(substrait_error_code::CANCELLED, "Substrait execution was cancelled");
+    }
+    (void)transition(execution_state::RUNNING, execution_state::SUCCEEDED);
+    release_resolutions();
+  } catch (const substrait_execution_error& error) {
+    (void)transition(execution_state::RUNNING,
+                     error.code() == substrait_error_code::CANCELLED ? execution_state::CANCELLED
+                                                                     : execution_state::FAILED);
+    release_resolutions();
+    throw;
+  } catch (const std::exception& error) {
+    const bool cancelled = cancel_requested_.load();
+    (void)transition(execution_state::RUNNING,
+                     cancelled ? execution_state::CANCELLED : execution_state::FAILED);
+    release_resolutions();
+    fail(cancelled ? substrait_error_code::CANCELLED : substrait_error_code::EXECUTION_FAILED,
+         cancelled ? "Substrait execution was cancelled"
+                   : std::string("Sirius execution failed: ") + error.what());
+  } catch (...) {
+    const bool cancelled = cancel_requested_.load();
+    (void)transition(execution_state::RUNNING,
+                     cancelled ? execution_state::CANCELLED : execution_state::FAILED);
+    release_resolutions();
+    fail(cancelled ? substrait_error_code::CANCELLED : substrait_error_code::EXECUTION_FAILED,
+         cancelled ? "Substrait execution was cancelled" : "Sirius execution failed");
+  }
+}
+
+void substrait_execution::run_batches(const batch_consumer& consumer)
+{
+  if (!consumer) { invalid("Substrait execution requires a batch consumer"); }
+  if (!transition(execution_state::PREPARED, execution_state::RUNNING)) {
+    if (state() == execution_state::CANCELLED) {
+      fail(substrait_error_code::CANCELLED, "Substrait execution was cancelled before start");
+    }
+    fail(substrait_error_code::EXECUTION_FAILED, "Substrait execution handles are single-use");
+  }
+  try {
+    if (cancel_requested_.load()) {
+      fail(substrait_error_code::CANCELLED, "Substrait execution was cancelled before start");
+    }
+    sirius_interface interface(context_, evidence_);
+    interface.sirius_execute_batch_streaming(
+      context_,
+      "[matrixone substrait offload]",
+      prepared_,
+      [this, &consumer](const auto& batch, auto stream) {
+        if (cancel_requested_.load()) { return false; }
+        if (consumer(batch, stream) == chunk_action::CANCEL) {
           cancel_requested_.store(true);
           return false;
         }

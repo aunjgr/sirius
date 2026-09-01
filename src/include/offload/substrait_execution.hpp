@@ -8,6 +8,9 @@
 #include "execution/sirius_execution_evidence.hpp"
 #include "offload/tae_read_resolver.hpp"
 
+#include <rmm/cuda_stream_view.hpp>
+
+#include <cucascade/data/data_batch.hpp>
 #include <duckdb/common/types.hpp>
 #include <duckdb/common/types/data_chunk.hpp>
 #include <duckdb/main/client_context.hpp>
@@ -28,12 +31,16 @@ class sirius_prepared_statement_data;
 
 namespace sirius::offload {
 
-inline constexpr std::uint32_t k_tae_read_protocol_version = 2;
-inline constexpr std::uint64_t k_tae_read_feature_bits     = 0;
-inline constexpr std::size_t k_max_substrait_plan_bytes    = 16U * 1024U * 1024U;
-inline constexpr std::size_t k_max_read_ref_bytes          = 4096U;
+inline constexpr std::uint32_t k_tae_read_protocol_version    = 2;
+inline constexpr std::uint64_t k_tae_read_feature_bits        = 0;
+inline constexpr std::uint32_t k_stream_read_protocol_version = 1;
+inline constexpr std::uint64_t k_stream_read_feature_bits     = 0;
+inline constexpr std::size_t k_max_substrait_plan_bytes       = 16U * 1024U * 1024U;
+inline constexpr std::size_t k_max_read_ref_bytes             = 4096U;
 inline constexpr std::string_view k_tae_read_type_url =
   "type.googleapis.com/matrixone.sirius.v1.TaeRead";
+inline constexpr std::string_view k_stream_read_type_url =
+  "type.googleapis.com/matrixone.sirius.v1.StreamRead";
 
 enum class substrait_error_code : std::uint8_t {
   UNSUPPORTED_PLAN = 0,
@@ -50,7 +57,9 @@ class substrait_execution_error final : public std::runtime_error {
 
   [[nodiscard]] substrait_error_code code() const noexcept { return code_; }
   [[nodiscard]] bool fallback_eligible() const noexcept
-  { return code_ == substrait_error_code::UNSUPPORTED_PLAN; }
+  {
+    return code_ == substrait_error_code::UNSUPPORTED_PLAN;
+  }
 
  private:
   substrait_error_code code_;
@@ -58,6 +67,8 @@ class substrait_execution_error final : public std::runtime_error {
 
 enum class chunk_action : std::uint8_t { CONTINUE = 0, CANCEL };
 using chunk_consumer = std::function<chunk_action(const duckdb::DataChunk&)>;
+using batch_consumer =
+  std::function<chunk_action(const std::shared_ptr<cucascade::data_batch>&, rmm::cuda_stream_view)>;
 
 struct execution_schema {
   duckdb::vector<std::string> names;
@@ -79,7 +90,7 @@ class substrait_execution final {
                       duckdb::shared_ptr<sirius_prepared_statement_data> prepared,
                       execution_schema schema,
                       std::shared_ptr<execution_evidence> evidence,
-                      std::vector<std::unique_ptr<resolved_tae_read>> resolutions);
+                      std::vector<std::unique_ptr<resolved_read>> resolutions);
   ~substrait_execution() = default;
 
   substrait_execution(const substrait_execution&)            = delete;
@@ -92,6 +103,7 @@ class substrait_execution final {
 
   void cancel() noexcept;
   void run(const chunk_consumer& consumer);
+  void run_batches(const batch_consumer& consumer);
 
  private:
   bool transition(execution_state expected, execution_state desired) noexcept;
@@ -101,7 +113,7 @@ class substrait_execution final {
   duckdb::shared_ptr<sirius_prepared_statement_data> prepared_;
   execution_schema schema_;
   std::shared_ptr<execution_evidence> evidence_;
-  std::vector<std::unique_ptr<resolved_tae_read>> resolutions_;
+  std::vector<std::unique_ptr<resolved_read>> resolutions_;
   std::mutex resolutions_mutex_;
   std::atomic<execution_state> state_{execution_state::PREPARED};
   std::atomic<bool> cancel_requested_{false};
@@ -117,7 +129,7 @@ namespace detail {
 
 struct validated_substrait_plan {
   std::string serialized;
-  std::vector<std::unique_ptr<resolved_tae_read>> resolutions;
+  std::vector<std::unique_ptr<resolved_read>> resolutions;
 };
 
 /// Pure validation/resolution seam used by prepare_substrait and contract

@@ -16,3 +16,7 @@ branch = main
 [submodule "vcpkg"]
 path = vcpkg
 url = https://github.com/Microsoft/vcpkg.git
+[submodule "tae-scanner"]
+	path = tae-scanner
+	url = https://github.com/matrixorigin/duckdb-tae-scanner.git
+	branch = main

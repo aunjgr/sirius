@@ -98,8 +98,7 @@ void batched_invert_null_mask(const BatchedNullMaskDesc* d_descs,
   uint32_t max_words = (8192 + 31) / 32;  // 256 words
   uint32_t grid_x    = (max_words + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
   dim3 grid(grid_x, n_descs);
-  batched_invert_mask_kernel<<<grid, THREADS_PER_BLOCK, 0, stream.value()>>>(
-    d_descs, d_validity);
+  batched_invert_mask_kernel<<<grid, THREADS_PER_BLOCK, 0, stream.value()>>>(d_descs, d_validity);
 }
 
 }  // namespace sirius::cuda::tae

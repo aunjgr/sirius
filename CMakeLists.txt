@@ -18,6 +18,8 @@ cmake_minimum_required(VERSION 3.30.4 FATAL_ERROR)
 
 project(sirius LANGUAGES CXX CUDA)
 
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/SiriusDependencies.cmake)
+
 # Set CUDA architecture
 if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
   set(CMAKE_CUDA_ARCHITECTURES native)
@@ -196,6 +198,7 @@ set(EXTENSION_SOURCES
     src/op/scan/iceberg_delete_pipeline.cpp
     src/op/scan/iceberg_metadata_reader.cpp
     src/op/scan/iceberg_scan_task.cpp
+    src/op/scan/mo_native_scan_task.cpp
     src/op/scan/positional_delete_filter.cpp
     src/op/scan/puffin_reader.cpp
     src/op/scan/parquet_scan_task.cpp
@@ -217,6 +220,7 @@ set(EXTENSION_SOURCES
     src/op/sirius_physical_empty_result.cpp
     src/op/sirius_physical_filter.cpp
     src/op/sirius_physical_gpu_tae_scan.cpp
+    src/op/sirius_physical_gpu_mo_scan.cpp
     src/op/sirius_physical_grouped_aggregate.cpp
     src/op/sirius_physical_grouped_aggregate_merge.cpp
     src/op/sirius_physical_hash_join.cpp
@@ -281,8 +285,9 @@ set(EXTENSION_SOURCES
 # Legacy Sirius — all legacy-specific config lives in src/legacy/CMakeLists.txt.
 # Deleting src/legacy/ cleanly removes legacy build support.
 set(CUDA_SOURCES
-    src/op/scan/equality_delete_mask.cu src/cuda/tae/tae_decode_fixed.cu
-    src/cuda/tae/tae_decode_varchar.cu src/cuda/tae/tae_null_mask.cu)
+    src/op/scan/equality_delete_mask.cu src/cuda/mo_native_result_pack.cu
+    src/cuda/tae/tae_decode_fixed.cu src/cuda/tae/tae_decode_varchar.cu
+    src/cuda/tae/tae_null_mask.cu)
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/legacy/CMakeLists.txt")
   add_subdirectory(src/legacy)
   list(APPEND EXTENSION_SOURCES ${SIRIUS_LEGACY_SOURCES}
@@ -326,7 +331,7 @@ foreach(_target sirius_extension sirius_loadable_extension)
       $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/substrait/third_party/substrait>
       $<$<BOOL:${SIRIUS_LEGACY_INCLUDE_DIR}>:$<BUILD_INTERFACE:${SIRIUS_LEGACY_INCLUDE_DIR}>>
       # tae-scanner headers needed by tae_scan_task.cpp for TAEScanBindData
-      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../tae-scanner/include>)
+      $<BUILD_INTERFACE:${SIRIUS_TAE_SCANNER_DIR}/include>)
 
   if(SIRIUS_LEGACY_COMPILE_DEFINITIONS)
     target_compile_definitions(${_target}
@@ -348,7 +353,10 @@ foreach(_target sirius_extension sirius_loadable_extension)
     lz4
     nvcomp)
 
-  target_link_libraries(${_target} substrait_extension)
+  # Sirius calls the TAE scanner's filter and zone-map helpers directly. Keep
+  # both extension dependencies transitive so standalone and embedding consumers
+  # do not depend on static archive order.
+  target_link_libraries(${_target} substrait_extension tae_scanner_extension)
 
   add_dependencies(${_target} duckdb_static)
 endforeach()
@@ -449,7 +457,8 @@ add_executable(
 add_executable(
   sirius_substrait_contract_unittest
   test/cpp/exec/execution_evidence_unittest.cpp
-  test/cpp/offload/test_substrait_execution.cpp)
+  test/cpp/offload/test_substrait_execution.cpp
+  test/cpp/pipeline/test_mo_native_scan_backpressure.cpp)
 target_include_directories(
   sirius_execution_evidence_unittest
   PRIVATE $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/third_party/catch>
@@ -468,11 +477,14 @@ target_include_directories(
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/substrait/src/include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/substrait/third_party>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/substrait/third_party/substrait>)
-target_link_libraries(sirius_substrait_contract_unittest sirius_extension duckdb_static)
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/substrait/third_party/substrait>
+    $<BUILD_INTERFACE:${SIRIUS_TAE_SCANNER_DIR}/include>
+)
+target_link_libraries(sirius_substrait_contract_unittest sirius_extension
+                      duckdb_static)
 link_extension_libraries(sirius_substrait_contract_unittest "")
-target_link_options(sirius_substrait_contract_unittest
-                    PRIVATE "LINKER:--allow-multiple-definition")
+target_link_options(sirius_substrait_contract_unittest PRIVATE
+                    "LINKER:--allow-multiple-definition")
 set_target_properties(
   sirius_substrait_contract_unittest
   PROPERTIES CXX_STANDARD 20
@@ -497,6 +509,7 @@ target_include_directories(
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/substrait/src/include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/substrait/third_party>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/substrait/third_party/substrait>
+    $<BUILD_INTERFACE:${SIRIUS_TAE_SCANNER_DIR}/include>
     $<$<BOOL:${SIRIUS_LEGACY_INCLUDE_DIR}>:$<BUILD_INTERFACE:${SIRIUS_LEGACY_INCLUDE_DIR}>>
 )
 

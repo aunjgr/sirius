@@ -24,6 +24,7 @@
 #include "op/scan/cpu_source_task.hpp"
 #include "op/scan/duckdb_scan_executor.hpp"
 #include "op/scan/duckdb_scan_task.hpp"
+#include "op/scan/mo_native_scan_task.hpp"
 #include "op/scan/parquet_scan_task.hpp"
 #include "op/scan/tae_scan_task.hpp"
 #include "pipeline/gpu_pipeline_executor.hpp"
@@ -93,6 +94,8 @@ void task_scheduler::schedule(std::unique_ptr<sirius::parallel::itask> task)
   } else if (task->is<sirius::op::scan::cpu_source_task>()) {
     _scan_executor->schedule(std::move(task));
   } else if (task->is<sirius::op::scan::tae_scan_task>()) {
+    _scan_executor->schedule(std::move(task));
+  } else if (task->is<sirius::op::scan::mo_native_scan_task>()) {
     _scan_executor->schedule(std::move(task));
   } else {
     _task_queue.push(std::move(task));

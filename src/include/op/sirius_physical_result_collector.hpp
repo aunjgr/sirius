@@ -101,6 +101,8 @@ class sirius_physical_materialized_collector : public sirius_physical_result_col
 };
 
 using result_chunk_callback = std::function<bool(const duckdb::DataChunk&)>;
+using result_batch_callback =
+  std::function<bool(const std::shared_ptr<cucascade::data_batch>&, rmm::cuda_stream_view)>;
 
 /// Result sink that transfers each decoded chunk directly to its consumer.
 /// The callback is serialized and synchronous: returning from sink means the
@@ -111,6 +113,9 @@ class sirius_physical_streaming_collector : public sirius_physical_result_collec
   sirius_physical_streaming_collector(::sirius::sirius_prepared_statement_data& data,
                                       duckdb::ClientContext& client_ctx,
                                       result_chunk_callback callback);
+  sirius_physical_streaming_collector(::sirius::sirius_prepared_statement_data& data,
+                                      duckdb::ClientContext& client_ctx,
+                                      result_batch_callback callback);
 
   duckdb::unique_ptr<duckdb::QueryResult> get_result() override;
   void sink(const operator_data& input_data, rmm::cuda_stream_view stream) override;
@@ -118,6 +123,7 @@ class sirius_physical_streaming_collector : public sirius_physical_result_collec
  private:
   duckdb::ClientContext& client_ctx_;
   result_chunk_callback callback_;
+  result_batch_callback batch_callback_;
 };
 
 }  // namespace op
