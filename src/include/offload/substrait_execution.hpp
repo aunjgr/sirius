@@ -48,6 +48,7 @@ enum class substrait_error_code : std::uint8_t {
   READ_RESOLUTION_FAILED,
   AUTHENTICATION_FAILED,
   EXECUTION_FAILED,
+  GPU_DEVICE_UNAVAILABLE,
   CANCELLED,
 };
 

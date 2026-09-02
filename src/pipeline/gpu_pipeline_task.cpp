@@ -20,6 +20,7 @@
 #include "log/logging.hpp"
 #include "memory/defragmenter_oom_policy.hpp"
 #include "memory/sirius_memory_reservation_manager.hpp"
+#include "pipeline/gpu_stream_quiescence_error.hpp"
 #include "pipeline/oom_reschedule_exception.hpp"
 
 #include <nvtx3/nvtx3.hpp>
@@ -32,12 +33,59 @@
 #include <data/data_batch_utils.hpp>
 
 #include <format>
+#include <mutex>
 #include <optional>
 
 namespace sirius {
 namespace pipeline {
 
 namespace {
+
+std::string exception_message(const std::exception_ptr& error)
+{
+  try {
+    if (error) { std::rethrow_exception(error); }
+  } catch (const std::exception& exception) {
+    return exception.what();
+  } catch (...) {
+    return "unknown task failure";
+  }
+  return "missing task failure";
+}
+
+[[noreturn]] void rethrow_after_task_quiescence(rmm::cuda_stream_view stream,
+                                                std::exception_ptr original)
+{
+  try {
+    stream.synchronize();
+  } catch (const std::exception& synchronization) {
+    throw gpu_stream_quiescence_error(
+      "task failure '" + exception_message(original) +
+      "' was followed by CUDA stream synchronization failure: " + synchronization.what());
+  } catch (...) {
+    throw gpu_stream_quiescence_error(
+      "task failure '" + exception_message(original) +
+      "' was followed by unknown CUDA stream synchronization failure");
+  }
+  std::rethrow_exception(original);
+}
+
+struct quarantined_task_owners {
+  std::vector<cucascade::data_batch_processing_handle> handles;
+  std::unique_ptr<op::operator_data> output;
+};
+
+void quarantine_task_owners(std::vector<cucascade::data_batch_processing_handle> handles,
+                            std::unique_ptr<op::operator_data> output)
+{
+  // Synchronization failure is process-fatal. Retain task owners until bounded
+  // fail-stop exit makes OS/CUDA teardown authoritative.
+  static std::mutex mutex;
+  static auto* owners = new std::vector<std::unique_ptr<quarantined_task_owners>>;
+  std::lock_guard lock(mutex);
+  owners->push_back(std::make_unique<quarantined_task_owners>(
+    quarantined_task_owners{std::move(handles), std::move(output)}));
+}
 
 void validate_operator_output_types(const op::operator_data* data,
                                     const op::sirius_physical_operator& op)
@@ -326,83 +374,98 @@ void gpu_pipeline_task::execute(rmm::cuda_stream_view stream)
 
   auto& global = _global_state->cast<gpu_pipeline_task_global_state>();
 
-  std::optional<std::vector<cucascade::data_batch_processing_handle>> handles_opt;
+  // Keep every task owner outside the try block so failure synchronization
+  // runs before handles, output, reservation attachment, or input unwind.
+  std::vector<cucascade::data_batch_processing_handle> processing_handles;
+  std::unique_ptr<op::operator_data> output_data;
+  auto fail_after_quiescence = [&](std::exception_ptr original) -> void {
+    try {
+      rethrow_after_task_quiescence(stream, std::move(original));
+    } catch (const gpu_stream_quiescence_error&) {
+      quarantine_task_owners(std::move(processing_handles), std::move(output_data));
+      std::move(source_closer).Cancel();
+      throw;
+    }
+  };
   try {
-    handles_opt =
+    std::optional<std::vector<cucascade::data_batch_processing_handle>> handles_opt =
       local_state._input_data.get()->prepare_for_processing(requested_memory_space, stream);
+    if (!handles_opt) {
+      throw oom_reschedule_exception(
+        std::move(local_state._input_data), 0, "Failed to lock or prepare batches for processing");
+    }
+    processing_handles = std::move(*handles_opt);
+
+    auto const prepare_end = std::chrono::high_resolution_clock::now();
+    auto const prepare_duration =
+      std::chrono::duration_cast<std::chrono::microseconds>(prepare_end - prepare_start);
+    SIRIUS_LOG_TRACE("Pipeline {}: operator {} (id={}) prepare execution time: {:.2f} ms",
+                     pipeline->get_pipeline_id(),
+                     first_op.get_name(),
+                     first_op.get_operator_id(),
+                     prepare_duration.count() / 1000.0);
+
+    // At this point, all input batches are locked for processing.
+    // They will remain locked until the processing_handles go out of scope.
+
+    // 2. Set reservation_aware_memory_resource_ref as the default cudf allocator
+    // 3. Execute cudf operators on the pipeline
+    _allocator       = allocator;
+    auto input_basis = local_state.get_task_consumption_basis();
+    output_data      = compute_task(stream);
+
+    // Record memory metrics for future reservation estimates
+    if (output_data) {
+      auto peak_bytes = _allocator ? _allocator->get_peak_allocated_bytes(stream) : 0;
+      // Subtract the peak allocated bytes to the input data to get the peak allocated bytes for the
+      // operators. Clamp at zero to avoid size_t underflow when estimates exceed the observed peak.
+      if (peak_bytes > local_state._bytes_to_materialize_input) {
+        peak_bytes -= local_state._bytes_to_materialize_input;
+      } else {
+        peak_bytes = 0;
+      }
+      std::size_t output_bytes = 0;
+      auto* pipelineable_output =
+        dynamic_cast<const op::pipelineable_operator_data*>(output_data.get());
+      if (pipelineable_output) {
+        for (const auto& batch : pipelineable_output->get_data_batches()) {
+          if (batch && batch->get_data()) {
+            output_bytes += batch->get_data()->get_size_in_bytes();
+          }
+        }
+      }
+      global.get_memory_history().record({input_basis, peak_bytes, output_bytes});
+      SIRIUS_LOG_TRACE(
+        "Pipeline {}: memory history record - input_basis={}, output_bytes={}, "
+        "reservation_bytes={}, "
+        "peak_bytes={}, peak_bytes_to_materialize_input={}",
+        pipeline->get_pipeline_id(),
+        input_basis,
+        output_bytes,
+        reservation_bytes,
+        peak_bytes,
+        local_state._bytes_to_materialize_input);
+    }
+
+    if (output_data) { publish_output(*output_data, stream); }
+    // Sink publication can enqueue device work too. This is the final success
+    // quiescence point before any task-owned resource is released.
+    stream.synchronize();
   } catch (const rmm::out_of_memory& oom) {
     auto peak_bytes  = allocator->get_peak_allocated_bytes(stream);
     auto input_basis = local_state.get_task_consumption_basis();
     global.get_memory_history().record_on_failure(input_basis, peak_bytes);
-
-    SIRIUS_LOG_ERROR("Pipeline {}: OOM preparing batches for processing",
-                     pipeline->get_pipeline_id());
-    throw oom_reschedule_exception(
-      std::move(local_state._input_data),
-      0,
-      std::string("OOM while preparing batches for processing: ") + oom.what());
-  } catch (const std::exception& e) {
-    SIRIUS_LOG_ERROR("Unknown error in prepare_for_processing for pipeline {}: {}",
-                     pipeline->get_pipeline_id(),
-                     e.what());
-    throw;
-  }
-
-  if (!handles_opt) {
-    throw oom_reschedule_exception(
-      std::move(local_state._input_data), 0, "Failed to lock or prepare batches for processing");
-  }
-  std::vector<cucascade::data_batch_processing_handle> processing_handles = std::move(*handles_opt);
-
-  auto const prepare_end = std::chrono::high_resolution_clock::now();
-  auto const prepare_duration =
-    std::chrono::duration_cast<std::chrono::microseconds>(prepare_end - prepare_start);
-  SIRIUS_LOG_TRACE("Pipeline {}: operator {} (id={}) prepare execution time: {:.2f} ms",
-                   pipeline->get_pipeline_id(),
-                   first_op.get_name(),
-                   first_op.get_operator_id(),
-                   prepare_duration.count() / 1000.0);
-
-  // At this point, all input batches are locked for processing.
-  // They will remain locked until the processing_handles go out of scope.
-
-  // 2. Set reservation_aware_memory_resource_ref as the default cudf allocator
-  // 3. Execute cudf operators on the pipeline
-  _allocator                                     = allocator;
-  auto input_basis                               = local_state.get_task_consumption_basis();
-  std::unique_ptr<op::operator_data> output_data = compute_task(stream);
-
-  // Record memory metrics for future reservation estimates
-  if (output_data) {
-    auto peak_bytes = _allocator ? _allocator->get_peak_allocated_bytes(stream) : 0;
-    // Subtract the peak allocated bytes to the input data to get the peak allocated bytes for the
-    // operators. Clamp at zero to avoid size_t underflow when estimates exceed the observed peak.
-    if (peak_bytes > local_state._bytes_to_materialize_input) {
-      peak_bytes -= local_state._bytes_to_materialize_input;
-    } else {
-      peak_bytes = 0;
+    try {
+      throw oom_reschedule_exception(
+        std::move(local_state._input_data),
+        0,
+        std::string("OOM while preparing batches for processing: ") + oom.what());
+    } catch (...) {
+      fail_after_quiescence(std::current_exception());
     }
-    std::size_t output_bytes = 0;
-    auto* pipelineable_output =
-      dynamic_cast<const op::pipelineable_operator_data*>(output_data.get());
-    if (pipelineable_output) {
-      for (const auto& batch : pipelineable_output->get_data_batches()) {
-        if (batch && batch->get_data()) { output_bytes += batch->get_data()->get_size_in_bytes(); }
-      }
-    }
-    global.get_memory_history().record({input_basis, peak_bytes, output_bytes});
-    SIRIUS_LOG_TRACE(
-      "Pipeline {}: memory history record - input_basis={}, output_bytes={}, reservation_bytes={}, "
-      "peak_bytes={}, peak_bytes_to_materialize_input={}",
-      pipeline->get_pipeline_id(),
-      input_basis,
-      output_bytes,
-      reservation_bytes,
-      peak_bytes,
-      local_state._bytes_to_materialize_input);
+  } catch (...) {
+    fail_after_quiescence(std::current_exception());
   }
-
-  if (output_data) { publish_output(*output_data, stream); }
 
   // Processing handles are automatically released here when they go out of scope
 }

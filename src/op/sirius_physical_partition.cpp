@@ -161,11 +161,20 @@ std::unique_ptr<operator_data> sirius_physical_partition::execute(const operator
     throw std::runtime_error("We expect only one input batch for partition operator " +
                              std::to_string(this->get_operator_id()));
   }
-  if (!_num_partitions.has_value()) {
-    throw std::runtime_error("Num partitions was not set in sirius_physical_partition operator " +
-                             std::to_string(this->get_operator_id()));
+
+  int num_partitions = 0;
+  {
+    // Task creation publishes the partition count before scheduling. Copy it
+    // under the metadata lock so concurrent tasks never observe a mutable
+    // optional while their GPU work proceeds independently.
+    std::lock_guard<std::mutex> guard(lock);
+    if (!_num_partitions.has_value()) {
+      throw std::runtime_error("Num partitions was not set in sirius_physical_partition operator " +
+                               std::to_string(this->get_operator_id()));
+    }
+    num_partitions = _num_partitions.value();
   }
-  if (_num_partitions.value() < 2 || _partition_keys.empty()) {
+  if (num_partitions < 2 || _partition_keys.empty()) {
     return std::make_unique<pipelineable_operator_data>(input.get_data_batches());
   }
 
@@ -176,7 +185,7 @@ std::unique_ptr<operator_data> sirius_physical_partition::execute(const operator
       partitioned_results = gpu_partition_impl::hash_partition(input_batch,
                                                                _partition_keys,
                                                                _partition_key_cast_types,
-                                                               _num_partitions.value(),
+                                                               num_partitions,
                                                                stream,
                                                                *input_batch->get_memory_space());
       break;
@@ -184,7 +193,7 @@ std::unique_ptr<operator_data> sirius_physical_partition::execute(const operator
       throw std::runtime_error("Range partitioning is not implemented yet");
     case PartitionType::EVENLY:
       partitioned_results = gpu_partition_impl::evenly_partition(
-        input_batch, _num_partitions.value(), stream, *input_batch->get_memory_space());
+        input_batch, num_partitions, stream, *input_batch->get_memory_space());
       break;
     case PartitionType::NONE: partitioned_results = {input_batch}; break;
     case PartitionType::CUSTOM:

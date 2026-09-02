@@ -6,6 +6,7 @@
 #include "offload/substrait_execution.hpp"
 
 #include "from_substrait.hpp"
+#include "pipeline/gpu_stream_quiescence_error.hpp"
 #include "planner/sirius_prepare.hpp"
 #include "sirius_interface.hpp"
 #include "substrait/plan.pb.h"
@@ -852,6 +853,11 @@ void substrait_execution::run(const chunk_consumer& consumer)
                                                                      : execution_state::FAILED);
     release_resolutions();
     throw;
+  } catch (const pipeline::gpu_stream_quiescence_error& error) {
+    (void)transition(execution_state::RUNNING, execution_state::FAILED);
+    release_resolutions();
+    fail(substrait_error_code::GPU_DEVICE_UNAVAILABLE,
+         std::string("Sirius GPU generation is unavailable: ") + error.what());
   } catch (const std::exception& error) {
     const bool cancelled = cancel_requested_.load();
     (void)transition(execution_state::RUNNING,
@@ -907,6 +913,11 @@ void substrait_execution::run_batches(const batch_consumer& consumer)
                                                                      : execution_state::FAILED);
     release_resolutions();
     throw;
+  } catch (const pipeline::gpu_stream_quiescence_error& error) {
+    (void)transition(execution_state::RUNNING, execution_state::FAILED);
+    release_resolutions();
+    fail(substrait_error_code::GPU_DEVICE_UNAVAILABLE,
+         std::string("Sirius GPU generation is unavailable: ") + error.what());
   } catch (const std::exception& error) {
     const bool cancelled = cancel_requested_.load();
     (void)transition(execution_state::RUNNING,
