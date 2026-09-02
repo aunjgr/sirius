@@ -34,6 +34,7 @@
 
 #include <format>
 #include <mutex>
+#include <new>
 #include <optional>
 
 namespace sirius {
