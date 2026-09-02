@@ -107,18 +107,18 @@ struct cross_pipeline_overlap {
 
 class overlap_tracking_operator : public sirius_physical_operator {
  public:
-  explicit overlap_tracking_operator(std::shared_ptr<cross_pipeline_overlap> cross = nullptr)
-    : sirius_physical_operator(SiriusPhysicalOperatorType::PROJECTION, {}, 0),
-      cross(std::move(cross))
+  explicit overlap_tracking_operator(
+    std::shared_ptr<cross_pipeline_overlap> cross = nullptr,
+    SiriusPhysicalOperatorType type               = SiriusPhysicalOperatorType::PROJECTION)
+    : sirius_physical_operator(type, {}, 0), cross(std::move(cross))
   {
   }
 
   std::unique_ptr<operator_data> execute(const operator_data&, rmm::cuda_stream_view) override
   {
-    auto current = active.fetch_add(1) + 1;
+    auto current  = active.fetch_add(1) + 1;
     auto observed = max_active.load();
-    while (observed < current && !max_active.compare_exchange_weak(observed, current)) {
-    }
+    while (observed < current && !max_active.compare_exchange_weak(observed, current)) {}
     if (cross) {
       std::unique_lock lock(cross->mutex);
       cross->active++;
@@ -141,8 +141,7 @@ class overlap_tracking_operator : public sirius_physical_operator {
   std::shared_ptr<cross_pipeline_overlap> cross;
 };
 
-std::unique_ptr<sirius::memory::sirius_memory_reservation_manager>
-make_small_test_memory_manager()
+std::unique_ptr<sirius::memory::sirius_memory_reservation_manager> make_small_test_memory_manager()
 {
   cucascade::memory::reservation_manager_configurator builder;
   builder.set_number_of_gpus(1)
@@ -228,11 +227,11 @@ TEST_CASE("GPU executor serializes complete tasks within one pipeline",
     auto input = std::make_unique<pipelineable_operator_data>(
       std::vector<std::shared_ptr<cucascade::data_batch>>{});
     auto local_state = std::make_unique<gpu_pipeline_task_local_state>(std::move(input));
-    executor.schedule(std::make_unique<gpu_pipeline_task>(
-      task_id,
-      std::vector<cucascade::shared_data_repository*>{},
-      std::move(local_state),
-      global_state));
+    executor.schedule(
+      std::make_unique<gpu_pipeline_task>(task_id,
+                                          std::vector<cucascade::shared_data_repository*>{},
+                                          std::move(local_state),
+                                          global_state));
   }
 
   auto const deadline = std::chrono::steady_clock::now() + 10s;
@@ -243,6 +242,53 @@ TEST_CASE("GPU executor serializes complete tasks within one pipeline",
 
   REQUIRE(op.executed.load() == 2);
   CHECK(op.max_active.load() == 1);
+}
+
+TEST_CASE("GPU executor overlaps tasks in one reentrant PARTITION pipeline",
+          "[task_scheduler][pipeline_execution_gate][partition]")
+{
+  auto manager = make_small_test_memory_manager();
+  sirius::exec::thread_pool_config gpu_config{2};
+  sirius::exec::thread_pool_config scan_config{1};
+  task_scheduler executor(gpu_config, scan_config, *manager);
+
+  duckdb::DuckDB db(nullptr);
+  duckdb::Connection con(db);
+  sirius::sirius_interface sirius_iface(*con.context);
+  sirius::sirius_engine engine(*con.context, sirius_iface);
+  auto pipeline = duckdb::make_shared_ptr<sirius_pipeline>(engine);
+  auto barrier  = std::make_shared<cross_pipeline_overlap>();
+  overlap_tracking_operator op(barrier, SiriusPhysicalOperatorType::PARTITION);
+  sirius_pipeline_build_state build_state;
+  build_state.set_pipeline_source(*pipeline, op);
+  build_state.add_pipeline_operator(*pipeline, op);
+  build_state.set_pipeline_sink(*pipeline, &op, 0);
+  op.set_pipeline(pipeline);
+
+  auto global_state = std::make_shared<gpu_pipeline_task_global_state>(pipeline);
+  pipeline->mark_task_created();
+  pipeline->mark_task_created();
+  executor.start();
+  for (uint64_t task_id = 0; task_id < 2; ++task_id) {
+    auto input = std::make_unique<pipelineable_operator_data>(
+      std::vector<std::shared_ptr<cucascade::data_batch>>{});
+    auto local_state = std::make_unique<gpu_pipeline_task_local_state>(std::move(input));
+    executor.schedule(
+      std::make_unique<gpu_pipeline_task>(task_id,
+                                          std::vector<cucascade::shared_data_repository*>{},
+                                          std::move(local_state),
+                                          global_state));
+  }
+
+  auto const deadline = std::chrono::steady_clock::now() + 10s;
+  {
+    std::unique_lock lock(barrier->mutex);
+    REQUIRE(barrier->cv.wait_until(lock, deadline, [&] { return barrier->max_active >= 2; }));
+  }
+  executor.stop();
+
+  REQUIRE(op.executed.load() == 2);
+  CHECK(op.max_active.load() == 2);
 }
 
 TEST_CASE("GPU executor runs independent pipelines on separate streams",
@@ -279,14 +325,14 @@ TEST_CASE("GPU executor runs independent pipelines on separate streams",
   auto schedule_pipeline = [&](uint64_t task_id,
                                const duckdb::shared_ptr<sirius_pipeline>& pipeline) {
     auto global_state = std::make_shared<gpu_pipeline_task_global_state>(pipeline);
-    auto input = std::make_unique<pipelineable_operator_data>(
+    auto input        = std::make_unique<pipelineable_operator_data>(
       std::vector<std::shared_ptr<cucascade::data_batch>>{});
     auto local_state = std::make_unique<gpu_pipeline_task_local_state>(std::move(input));
-    executor.schedule(std::make_unique<gpu_pipeline_task>(
-      task_id,
-      std::vector<cucascade::shared_data_repository*>{},
-      std::move(local_state),
-      std::move(global_state)));
+    executor.schedule(
+      std::make_unique<gpu_pipeline_task>(task_id,
+                                          std::vector<cucascade::shared_data_repository*>{},
+                                          std::move(local_state),
+                                          std::move(global_state)));
   };
   schedule_pipeline(0, first_pipeline);
   schedule_pipeline(1, second_pipeline);

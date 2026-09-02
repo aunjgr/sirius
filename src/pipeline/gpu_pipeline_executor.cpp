@@ -24,6 +24,7 @@
 #include "op/sirius_physical_operator.hpp"
 #include "op/sirius_physical_operator_type.hpp"
 #include "pipeline/completion_handler.hpp"
+#include "pipeline/gpu_stream_quiescence_error.hpp"
 #include "pipeline/oom_reschedule_exception.hpp"
 #include "pipeline/task_request.hpp"
 
@@ -32,9 +33,26 @@
 #include <util/stream_check_wrapper.hpp>
 
 #include <algorithm>
+#include <memory>
 #include <mutex>
+#include <vector>
 namespace sirius {
 namespace pipeline {
+
+namespace {
+
+void quarantine_poisoned_stream(cucascade::memory::borrowed_stream stream) noexcept
+{
+  // A failed synchronization is process-fatal. Retain the borrowed stream so
+  // its RAII callback cannot return the poisoned CUDA stream to the pool;
+  // bounded process exit makes OS/CUDA teardown the terminal owner.
+  static std::mutex mutex;
+  static auto* streams = new std::vector<std::unique_ptr<cucascade::memory::borrowed_stream>>;
+  std::lock_guard lock(mutex);
+  streams->push_back(std::make_unique<cucascade::memory::borrowed_stream>(std::move(stream)));
+}
+
+}  // namespace
 
 gpu_pipeline_executor::gpu_pipeline_executor(
   exec::thread_pool_config config,
@@ -211,9 +229,21 @@ void gpu_pipeline_executor::manager_loop()
        consumers  = std::move(output_consumers),
        pipeline]() mutable {
         std::unique_lock<std::mutex> pipeline_execution_guard;
-        if (pipeline) { pipeline_execution_guard = pipeline->acquire_execution_lock(); }
+        if (pipeline && !pipeline->permits_concurrent_tasks()) {
+          pipeline_execution_guard = pipeline->acquire_execution_lock();
+        }
         try {
           task->execute(exc_stream);
+        } catch (const gpu_stream_quiescence_error& fatal) {
+          // A failed synchronization makes this CUDA stream and process
+          // generation unsafe for reuse. Destroy the stream instead of
+          // returning it to the pool and propagate the typed fatal error.
+          quarantine_poisoned_stream(std::move(exc_stream));
+          SIRIUS_LOG_ERROR("GPU Pipeline Executor: fatal stream quiescence failure: {}",
+                           fatal.what());
+          if (_task_creator) { _task_creator->stop(); }
+          if (_completion_handler) { _completion_handler->report_error(std::current_exception()); }
+          return;
         } catch (oom_reschedule_exception& oom) {
           if (_completion_handler && _completion_handler->has_error()) {
             // If the completion handler is already in an error state, then we can just return and
