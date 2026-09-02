@@ -107,6 +107,7 @@ class injected_quiescence_failure_task final : public sirius::pipeline::gpu_pipe
   }
 
   [[nodiscard]] bool has_quarantined_input() const { return _quarantined_input != nullptr; }
+  [[nodiscard]] bool has_quarantined_handles() const { return !_quarantined_handles.empty(); }
 
  protected:
   void synchronize_task_stream(rmm::cuda_stream_view) override
@@ -361,6 +362,8 @@ TEST_CASE("gpu_pipeline_task retains input owner through failed quiescence",
   auto reservation = f.manager->request_reservation(
     cucascade::memory::any_memory_space_in_tier{cucascade::memory::Tier::GPU}, kReservationSize);
   REQUIRE(reservation != nullptr);
+  auto* reservation_allocator = reservation->get_memory_resource_of<cucascade::memory::Tier::GPU>();
+  REQUIRE(reservation_allocator != nullptr);
   local_state->set_reservation(std::move(reservation));
 
   auto task = std::make_unique<injected_quiescence_failure_task>(
@@ -370,11 +373,15 @@ TEST_CASE("gpu_pipeline_task retains input owner through failed quiescence",
   REQUIRE_THROWS_AS(task->execute(stream), sirius::pipeline::gpu_stream_quiescence_error);
   CHECK(task->input_was_alive_during_quiescence());
   CHECK(task->has_quarantined_input());
+  CHECK(task->has_quarantined_handles());
   CHECK_FALSE(input_lifetime.expired());
+  CHECK(f.manager->get_active_reservation_count() == 1);
 
   // The injected synchronization failed without poisoning the real stream.
-  // Synchronize it before releasing the test-owned quarantine.
+  // Synchronize it before releasing the test-owned quarantine and attachment.
   REQUIRE_NOTHROW(stream.synchronize());
+  reservation_allocator->reset_stream_reservation(stream);
+  CHECK(f.manager->get_active_reservation_count() == 0);
   task.reset();
   CHECK(input_lifetime.expired());
 }
