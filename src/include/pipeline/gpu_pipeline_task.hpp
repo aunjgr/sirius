@@ -263,7 +263,7 @@ class gpu_pipeline_task : public sirius_pipeline_itask {
     std::unique_ptr<op::operator_data> input,
     std::unique_ptr<op::operator_data> pending_output,
     std::vector<cucascade::data_batch_processing_handle> handles,
-    std::unique_ptr<op::operator_data> output);
+    std::unique_ptr<op::operator_data> output) noexcept;
 
  private:
   uint64_t _task_id;

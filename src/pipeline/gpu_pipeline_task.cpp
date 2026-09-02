@@ -63,15 +63,29 @@ struct quarantined_task_owners {
 void quarantine_task_owners(std::unique_ptr<op::operator_data> input,
                             std::unique_ptr<op::operator_data> pending_output,
                             std::vector<cucascade::data_batch_processing_handle> handles,
-                            std::unique_ptr<op::operator_data> output)
+                            std::unique_ptr<op::operator_data> output) noexcept
 {
   // Synchronization failure is process-fatal. Retain task owners until bounded
   // fail-stop exit makes OS/CUDA teardown authoritative.
-  static std::mutex mutex;
-  static auto* owners = new std::vector<std::unique_ptr<quarantined_task_owners>>;
-  std::lock_guard lock(mutex);
-  owners->push_back(std::make_unique<quarantined_task_owners>(quarantined_task_owners{
-    std::move(input), std::move(pending_output), std::move(handles), std::move(output)}));
+  // Allocate the slot before moving any owner into it. If quarantine storage
+  // cannot be established, terminate without unwinding the live owners against
+  // a poisoned stream; process teardown is then the only safe cleanup owner.
+  auto* slot = new (std::nothrow) quarantined_task_owners;
+  if (slot == nullptr) { std::terminate(); }
+  slot->input          = std::move(input);
+  slot->pending_output = std::move(pending_output);
+  slot->handles        = std::move(handles);
+  slot->output         = std::move(output);
+
+  try {
+    static std::mutex mutex;
+    static auto* owners = new std::vector<std::unique_ptr<quarantined_task_owners>>;
+    std::lock_guard lock(mutex);
+    owners->reserve(owners->size() + 1);
+    owners->push_back(std::unique_ptr<quarantined_task_owners>(slot));
+  } catch (...) {
+    std::terminate();
+  }
 }
 
 void validate_operator_output_types(const op::operator_data* data,
@@ -226,7 +240,7 @@ void gpu_pipeline_task::quarantine_failed_task_owners(
   std::unique_ptr<op::operator_data> input,
   std::unique_ptr<op::operator_data> pending_output,
   std::vector<cucascade::data_batch_processing_handle> handles,
-  std::unique_ptr<op::operator_data> output)
+  std::unique_ptr<op::operator_data> output) noexcept
 {
   quarantine_task_owners(
     std::move(input), std::move(pending_output), std::move(handles), std::move(output));

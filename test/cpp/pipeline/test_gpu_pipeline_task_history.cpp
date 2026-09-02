@@ -116,10 +116,11 @@ class injected_quiescence_failure_task final : public sirius::pipeline::gpu_pipe
     throw std::runtime_error("injected CUDA stream synchronization failure");
   }
 
-  void quarantine_failed_task_owners(std::unique_ptr<sirius::op::operator_data> input,
-                                     std::unique_ptr<sirius::op::operator_data> pending_output,
-                                     std::vector<cucascade::data_batch_processing_handle> handles,
-                                     std::unique_ptr<sirius::op::operator_data> output) override
+  void quarantine_failed_task_owners(
+    std::unique_ptr<sirius::op::operator_data> input,
+    std::unique_ptr<sirius::op::operator_data> pending_output,
+    std::vector<cucascade::data_batch_processing_handle> handles,
+    std::unique_ptr<sirius::op::operator_data> output) noexcept override
   {
     _quarantined_input   = std::move(input);
     _quarantined_pending = std::move(pending_output);
