@@ -53,29 +53,16 @@ std::string exception_message(const std::exception_ptr& error)
   return "missing task failure";
 }
 
-[[noreturn]] void rethrow_after_task_quiescence(rmm::cuda_stream_view stream,
-                                                std::exception_ptr original)
-{
-  try {
-    stream.synchronize();
-  } catch (const std::exception& synchronization) {
-    throw gpu_stream_quiescence_error(
-      "task failure '" + exception_message(original) +
-      "' was followed by CUDA stream synchronization failure: " + synchronization.what());
-  } catch (...) {
-    throw gpu_stream_quiescence_error(
-      "task failure '" + exception_message(original) +
-      "' was followed by unknown CUDA stream synchronization failure");
-  }
-  std::rethrow_exception(original);
-}
-
 struct quarantined_task_owners {
+  std::unique_ptr<op::operator_data> input;
+  std::unique_ptr<op::operator_data> pending_output;
   std::vector<cucascade::data_batch_processing_handle> handles;
   std::unique_ptr<op::operator_data> output;
 };
 
-void quarantine_task_owners(std::vector<cucascade::data_batch_processing_handle> handles,
+void quarantine_task_owners(std::unique_ptr<op::operator_data> input,
+                            std::unique_ptr<op::operator_data> pending_output,
+                            std::vector<cucascade::data_batch_processing_handle> handles,
                             std::unique_ptr<op::operator_data> output)
 {
   // Synchronization failure is process-fatal. Retain task owners until bounded
@@ -83,8 +70,8 @@ void quarantine_task_owners(std::vector<cucascade::data_batch_processing_handle>
   static std::mutex mutex;
   static auto* owners = new std::vector<std::unique_ptr<quarantined_task_owners>>;
   std::lock_guard lock(mutex);
-  owners->push_back(std::make_unique<quarantined_task_owners>(
-    quarantined_task_owners{std::move(handles), std::move(output)}));
+  owners->push_back(std::make_unique<quarantined_task_owners>(quarantined_task_owners{
+    std::move(input), std::move(pending_output), std::move(handles), std::move(output)}));
 }
 
 void validate_operator_output_types(const op::operator_data* data,
@@ -168,22 +155,22 @@ void log_operator_data(const op::sirius_physical_operator& op,
     extra_info);
 }
 
-std::unique_ptr<op::operator_data> run_one_operator(
-  op::sirius_physical_operator& op,
-  const op::operator_data& operator_input_data,
-  rmm::cuda_stream_view stream,
-  const sirius_pipeline* pipeline,
-  size_t op_index,
-  size_t num_operators,
-  cucascade::memory::reservation_aware_resource_adaptor* allocator)
+void run_one_operator(op::sirius_physical_operator& op,
+                      const op::operator_data& operator_input_data,
+                      std::unique_ptr<op::operator_data>& operator_output_data,
+                      rmm::cuda_stream_view stream,
+                      const sirius_pipeline* pipeline,
+                      size_t op_index,
+                      size_t num_operators,
+                      cucascade::memory::reservation_aware_resource_adaptor* allocator)
 {
   log_operator_data(op, operator_input_data, pipeline, "executing on");
 
   auto nvtx_label = std::format(
     "Pipeline {}: {} (id={})", pipeline->get_pipeline_id(), op.get_name(), op.get_operator_id());
   nvtx3::scoped_range nvtx_range{nvtx_label.c_str()};
-  auto start                = std::chrono::high_resolution_clock::now();
-  auto operator_output_data = op.execute(operator_input_data, stream);
+  auto start           = std::chrono::high_resolution_clock::now();
+  operator_output_data = op.execute(operator_input_data, stream);
   stream.synchronize();
   auto end      = std::chrono::high_resolution_clock::now();
   auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
@@ -198,7 +185,6 @@ std::unique_ptr<op::operator_data> run_one_operator(
   log_operator_data(op, *operator_output_data, pipeline, "produced", extra_info);
 
   validate_operator_output_types(operator_output_data.get(), op);
-  return operator_output_data;
 }
 
 }  // namespace
@@ -231,13 +217,32 @@ const sirius_pipeline* gpu_pipeline_task::get_pipeline() const
   return _global_state->cast<gpu_pipeline_task_global_state>().get_pipeline();
 }
 
+void gpu_pipeline_task::synchronize_task_stream(rmm::cuda_stream_view stream)
+{
+  stream.synchronize();
+}
+
+void gpu_pipeline_task::quarantine_failed_task_owners(
+  std::unique_ptr<op::operator_data> input,
+  std::unique_ptr<op::operator_data> pending_output,
+  std::vector<cucascade::data_batch_processing_handle> handles,
+  std::unique_ptr<op::operator_data> output)
+{
+  quarantine_task_owners(
+    std::move(input), std::move(pending_output), std::move(handles), std::move(output));
+}
+
 std::unique_ptr<op::operator_data> gpu_pipeline_task::compute_task(rmm::cuda_stream_view stream)
 {
   auto pipeline     = _global_state->cast<gpu_pipeline_task_global_state>().get_pipeline();
   auto& local_state = _local_state->cast<gpu_pipeline_task_local_state>();
-  auto operator_input_output_data = std::move(local_state._input_data);
-  auto operators                  = pipeline->get_operators();
-  auto start_index                = local_state._start_operator_index;
+  auto input_basis  = local_state.get_task_consumption_basis();
+  if (!_in_flight_data) { _in_flight_data = std::move(local_state._input_data); }
+  if (!_in_flight_data) {
+    throw std::runtime_error("gpu_pipeline_task::compute_task: input_data is null");
+  }
+  auto operators   = pipeline->get_operators();
+  auto start_index = local_state._start_operator_index;
 
   if (start_index > 0) {
     SIRIUS_LOG_INFO("Pipeline {}: resuming task {} from operator index {} (of {})",
@@ -250,8 +255,15 @@ std::unique_ptr<op::operator_data> gpu_pipeline_task::compute_task(rmm::cuda_str
   for (size_t i = start_index; i < operators.size(); i++) {
     auto& op = operators[i].get();
     try {
-      operator_input_output_data = run_one_operator(
-        op, *operator_input_output_data, stream, pipeline, i, operators.size(), _allocator);
+      run_one_operator(op,
+                       *_in_flight_data,
+                       _pending_output_data,
+                       stream,
+                       pipeline,
+                       i,
+                       operators.size(),
+                       _allocator);
+      _in_flight_data = std::move(_pending_output_data);
     } catch (const rmm::out_of_memory& oom) {
       auto peak_bytes = _allocator ? _allocator->get_peak_allocated_bytes(stream) : 0;
       // Subtract the peak allocated bytes to the input data to get the peak allocated bytes for the
@@ -295,19 +307,17 @@ std::unique_ptr<op::operator_data> gpu_pipeline_task::compute_task(rmm::cuda_str
         static_cast<double>(reservation_bytes) / (1024.0 * 1024.0),
         _task_id);
 
-      auto input_basis =
-        _local_state->cast<gpu_pipeline_task_local_state>().get_task_consumption_basis();
       auto& global = _global_state->cast<gpu_pipeline_task_global_state>();
       global.get_memory_history().record_on_failure(input_basis, peak_bytes);
 
       throw oom_reschedule_exception(
-        std::move(operator_input_output_data),
+        std::move(_in_flight_data),
         i,
         "OOM at operator " + op.get_name() + " (index " + std::to_string(i) + ")");
     }
   }
 
-  return operator_input_output_data;
+  return std::move(_in_flight_data);
 }
 
 void gpu_pipeline_task::publish_output(op::operator_data& output_data, rmm::cuda_stream_view stream)
@@ -373,26 +383,70 @@ void gpu_pipeline_task::execute(rmm::cuda_stream_view stream)
   }
 
   auto& global = _global_state->cast<gpu_pipeline_task_global_state>();
+  // Establish task-level ownership before any operation can enqueue GPU work.
+  // The cached basis remains available after local_state relinquishes the input.
+  auto input_basis = local_state.get_task_consumption_basis();
+  _in_flight_data  = std::move(local_state._input_data);
 
   // Keep every task owner outside the try block so failure synchronization
   // runs before handles, output, reservation attachment, or input unwind.
   std::vector<cucascade::data_batch_processing_handle> processing_handles;
   std::unique_ptr<op::operator_data> output_data;
-  auto fail_after_quiescence = [&](std::exception_ptr original) -> void {
+  auto quiesce_task = [&](const std::exception_ptr& original) -> void {
     try {
-      rethrow_after_task_quiescence(stream, std::move(original));
-    } catch (const gpu_stream_quiescence_error&) {
-      quarantine_task_owners(std::move(processing_handles), std::move(output_data));
-      std::move(source_closer).Cancel();
-      throw;
+      synchronize_task_stream(stream);
+    } catch (const std::exception& synchronization) {
+      throw gpu_stream_quiescence_error(
+        "task failure '" + exception_message(original) +
+        "' was followed by CUDA stream synchronization failure: " + synchronization.what());
+    } catch (...) {
+      throw gpu_stream_quiescence_error(
+        "task failure '" + exception_message(original) +
+        "' was followed by unknown CUDA stream synchronization failure");
     }
   };
+  auto quarantine_after_failed_quiescence = [&]() -> void {
+    quarantine_failed_task_owners(std::move(_in_flight_data),
+                                  std::move(_pending_output_data),
+                                  std::move(processing_handles),
+                                  std::move(output_data));
+    std::move(source_closer).Cancel();
+  };
+  auto fail_after_quiescence = [&](std::exception_ptr original) -> void {
+    try {
+      quiesce_task(original);
+    } catch (const gpu_stream_quiescence_error&) {
+      quarantine_after_failed_quiescence();
+      throw;
+    }
+    std::rethrow_exception(original);
+  };
+  auto retry_after_quiescence = [&](std::exception_ptr original,
+                                    oom_reschedule_exception& oom) -> void {
+    try {
+      quiesce_task(original);
+    } catch (const gpu_stream_quiescence_error&) {
+      _in_flight_data = oom.release_intermediate_data();
+      quarantine_after_failed_quiescence();
+      throw;
+    }
+    std::rethrow_exception(original);
+  };
   try {
-    std::optional<std::vector<cucascade::data_batch_processing_handle>> handles_opt =
-      local_state._input_data.get()->prepare_for_processing(requested_memory_space, stream);
+    std::optional<std::vector<cucascade::data_batch_processing_handle>> handles_opt;
+    try {
+      handles_opt = _in_flight_data->prepare_for_processing(requested_memory_space, stream);
+    } catch (const rmm::out_of_memory& oom) {
+      auto peak_bytes = allocator->get_peak_allocated_bytes(stream);
+      global.get_memory_history().record_on_failure(input_basis, peak_bytes);
+      throw oom_reschedule_exception(
+        std::move(_in_flight_data),
+        0,
+        std::string("OOM while preparing batches for processing: ") + oom.what());
+    }
     if (!handles_opt) {
       throw oom_reschedule_exception(
-        std::move(local_state._input_data), 0, "Failed to lock or prepare batches for processing");
+        std::move(_in_flight_data), 0, "Failed to lock or prepare batches for processing");
     }
     processing_handles = std::move(*handles_opt);
 
@@ -410,9 +464,8 @@ void gpu_pipeline_task::execute(rmm::cuda_stream_view stream)
 
     // 2. Set reservation_aware_memory_resource_ref as the default cudf allocator
     // 3. Execute cudf operators on the pipeline
-    _allocator       = allocator;
-    auto input_basis = local_state.get_task_consumption_basis();
-    output_data      = compute_task(stream);
+    _allocator  = allocator;
+    output_data = compute_task(stream);
 
     // Record memory metrics for future reservation estimates
     if (output_data) {
@@ -450,19 +503,9 @@ void gpu_pipeline_task::execute(rmm::cuda_stream_view stream)
     if (output_data) { publish_output(*output_data, stream); }
     // Sink publication can enqueue device work too. This is the final success
     // quiescence point before any task-owned resource is released.
-    stream.synchronize();
-  } catch (const rmm::out_of_memory& oom) {
-    auto peak_bytes  = allocator->get_peak_allocated_bytes(stream);
-    auto input_basis = local_state.get_task_consumption_basis();
-    global.get_memory_history().record_on_failure(input_basis, peak_bytes);
-    try {
-      throw oom_reschedule_exception(
-        std::move(local_state._input_data),
-        0,
-        std::string("OOM while preparing batches for processing: ") + oom.what());
-    } catch (...) {
-      fail_after_quiescence(std::current_exception());
-    }
+    synchronize_task_stream(stream);
+  } catch (oom_reschedule_exception& oom) {
+    retry_after_quiescence(std::current_exception(), oom);
   } catch (...) {
     fail_after_quiescence(std::current_exception());
   }

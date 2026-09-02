@@ -243,9 +243,38 @@ class gpu_pipeline_task : public sirius_pipeline_itask {
   virtual std::unique_ptr<gpu_pipeline_task> create_rescheduled_task(
     uint64_t task_id, std::unique_ptr<sirius_pipeline_task_local_state> local_state);
 
+ protected:
+  /**
+   * @brief Synchronize task-owned work before releasing any GPU input/output owner.
+   *
+   * Virtual only to provide deterministic failure injection for the ownership
+   * regression; production uses the supplied CUDA stream directly.
+   */
+  virtual void synchronize_task_stream(rmm::cuda_stream_view stream);
+
+  /**
+   * @brief Transfer owners that may still back a poisoned stream.
+   *
+   * Production retains them until fail-stop exit. Virtual dispatch lets the
+   * deterministic failure test release its injected, actually healthy stream
+   * only after a real synchronization.
+   */
+  virtual void quarantine_failed_task_owners(
+    std::unique_ptr<op::operator_data> input,
+    std::unique_ptr<op::operator_data> pending_output,
+    std::vector<cucascade::data_batch_processing_handle> handles,
+    std::unique_ptr<op::operator_data> output);
+
  private:
   uint64_t _task_id;
   std::vector<cucascade::shared_data_repository*> _data_repos;
+  // The current operator input stays task-owned across compute_task() unwinding.
+  // On fatal synchronization failure it transfers to the process-lifetime
+  // quarantine together with every other owner that may still back GPU work.
+  std::unique_ptr<op::operator_data> _in_flight_data;
+  // An operator result must also survive a failed post-operator synchronization
+  // before it can replace the current input.
+  std::unique_ptr<op::operator_data> _pending_output_data;
   bool _oom_rescheduled                                             = false;
   cucascade::memory::reservation_aware_resource_adaptor* _allocator = nullptr;
 };
