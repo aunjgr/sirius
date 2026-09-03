@@ -342,6 +342,14 @@ foreach(_target sirius_extension sirius_loadable_extension)
     target_compile_definitions(${_target} PRIVATE SIRIUS_PROFILE)
   endif()
 
+  # cuDF 26.10's public AST header uses std::variant without including
+  # <variant>. Force the standard header for C++ and CUDA translation units
+  # until the upstream header is self-contained; earlier stable releases do not
+  # need it.
+  if(cudf_VERSION VERSION_GREATER_EQUAL "26.10")
+    target_compile_options(${_target} PRIVATE -include variant)
+  endif()
+
   target_link_libraries(
     ${_target}
     cudf::cudf

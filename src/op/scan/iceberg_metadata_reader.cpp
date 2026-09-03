@@ -206,7 +206,7 @@ struct equality_delete_read_result {
  */
 equality_delete_read_result read_equality_delete_file(std::string const& delete_file_path)
 {
-  auto stream = cudf::get_default_stream();
+  rmm::cuda_stream_view const stream{cudf::get_default_stream()};
   auto opts =
     cudf::io::parquet_reader_options::builder(cudf::io::source_info{delete_file_path}).build();
   auto result = cudf::io::read_parquet(opts, stream);
@@ -301,7 +301,7 @@ EqualityDeleteGroup build_equality_group(std::vector<std::string> key_names,
                                          std::vector<std::optional<int32_t>> key_field_ids,
                                          std::vector<cudf::table_view> const& views)
 {
-  auto stream = cudf::get_default_stream();
+  rmm::cuda_stream_view const stream{cudf::get_default_stream()};
 
   auto all_rows = (views.size() == 1) ? std::make_unique<cudf::table>(views[0], stream)
                                       : cudf::concatenate(views, stream);
