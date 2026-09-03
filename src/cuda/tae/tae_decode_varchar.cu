@@ -15,6 +15,8 @@
  */
 
 #define CUB_WRAPPED_NAMESPACE sirius_tae_cub
+#include "cudf/cudf_compat.hpp"
+
 #include <cub/cub.cuh>
 #include <cuda/tae/tae_decode_kernels.hpp>
 #include <cuda_runtime.h>

@@ -68,6 +68,14 @@ endif()
 
 # Dependencies
 find_package(cudf REQUIRED CONFIG)
+# NVCC 13.3's split compilation loses generated PTX/cubin intermediates when
+# launched through sccache 0.17. Keep C/C++ caching, but invoke NVCC directly
+# for the cuDF 26.10 nightly toolchain.
+if(cudf_VERSION VERSION_GREATER_EQUAL "26.10")
+  set(CMAKE_CUDA_COMPILER_LAUNCHER
+      ""
+      CACHE STRING "" FORCE)
+endif()
 find_package(kvikio CONFIG REQUIRED)
 # kvikio pulls in BS::thread_pool whose INTERFACE_COMPILE_FEATURES include
 # `cuda_std_17`. That feature propagates transitively into duckdb_static (a
@@ -343,11 +351,13 @@ foreach(_target sirius_extension sirius_loadable_extension)
   endif()
 
   # cuDF 26.10's public AST header uses std::variant without including
-  # <variant>. Force the standard header for C++ and CUDA translation units
-  # until the upstream header is self-contained; earlier stable releases do not
-  # need it.
+  # <variant>. Force the standard header for C++ translation units until the
+  # upstream header is self-contained; CUDA sources include cudf_compat.hpp
+  # directly because sccache+nvcc cannot preserve compiler-preincluded headers.
   if(cudf_VERSION VERSION_GREATER_EQUAL "26.10")
-    target_compile_options(${_target} PRIVATE -include variant)
+    target_compile_options(
+      ${_target} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-include>
+                         $<$<COMPILE_LANGUAGE:CXX>:variant>)
   endif()
 
   target_link_libraries(
