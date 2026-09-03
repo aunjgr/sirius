@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include "cudf/cudf_compat.hpp"
 #include "offload/mo_native_result_pack.hpp"
 #include "tae/tae_format.hpp"
 

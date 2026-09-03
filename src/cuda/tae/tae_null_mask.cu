@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+#include "cudf/cudf_compat.hpp"
+
 #include <cuda/tae/tae_decode_kernels.hpp>
 #include <cuda_runtime.h>
 

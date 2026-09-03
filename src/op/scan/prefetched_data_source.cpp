@@ -89,9 +89,10 @@ struct cuda_event_guard {
 }  // namespace
 
 std::unique_ptr<cudf::io::datasource::buffer> prefetched_data_source::device_read(
-  size_t offset, size_t size, rmm::cuda_stream_view stream)
+  size_t offset, size_t size, datasource_stream_ref stream)
 {
-  rmm::device_buffer buffer(size, stream);
+  rmm::cuda_stream_view const rmm_stream{stream};
+  rmm::device_buffer buffer(size, rmm_stream);
   device_read(offset, size, static_cast<uint8_t*>(buffer.data()), stream);
   return cudf::io::datasource::buffer::create(std::move(buffer));
 }
@@ -165,12 +166,13 @@ prefetched_data_source::copy_result prefetched_data_source::enqueue_device_copie
 size_t prefetched_data_source::device_read(size_t offset,
                                            size_t size,
                                            uint8_t* dst,
-                                           rmm::cuda_stream_view stream)
+                                           datasource_stream_ref stream)
 {
   if (size == 0) return 0;
-  auto [bytes, stream_used] = enqueue_device_copies(offset, size, dst, stream);
+  rmm::cuda_stream_view const rmm_stream{stream};
+  auto [bytes, stream_used] = enqueue_device_copies(offset, size, dst, rmm_stream);
 #if CUDART_VERSION >= 13000
-  bool user_stream = stream.value() != nullptr && stream.value() != cudaStreamLegacy;
+  bool user_stream = rmm_stream.value() != nullptr && rmm_stream.value() != cudaStreamLegacy;
   if (!user_stream) { RMM_CUDA_TRY(::cudaStreamSynchronize(stream_used)); }
 #endif
   return bytes;
@@ -179,7 +181,7 @@ size_t prefetched_data_source::device_read(size_t offset,
 std::future<size_t> prefetched_data_source::device_read_async(size_t offset,
                                                               size_t size,
                                                               uint8_t* dst,
-                                                              rmm::cuda_stream_view stream)
+                                                              datasource_stream_ref stream)
 {
   if (size == 0) {
     std::promise<size_t> p;
@@ -187,7 +189,8 @@ std::future<size_t> prefetched_data_source::device_read_async(size_t offset,
     return p.get_future();
   }
 
-  auto [bytes, stream_used] = enqueue_device_copies(offset, size, dst, stream);
+  rmm::cuda_stream_view const rmm_stream{stream};
+  auto [bytes, stream_used] = enqueue_device_copies(offset, size, dst, rmm_stream);
   auto guard                = std::make_shared<cuda_event_guard>();
   RMM_CUDA_TRY(::cudaEventRecord(guard->event, stream_used));
 
