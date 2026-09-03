@@ -115,7 +115,7 @@ jobs:
             vcpkg-${{ runner.os }}-${{ runner.arch }}-${{ matrix.environment }}-
             vcpkg-${{ runner.os }}-${{ runner.arch }}-
 
-      - run: ${{ case(matrix.cudf-channel == 'nightly', 'pixi run -e nightly-runner nightly-run', '') }} make ${{ matrix.variant == 'legacy' && format('legacy-{0}', matrix.build-type) || case(matrix.compiler == 'gcc', matrix.build-type, format('clang-{0}', matrix.build-type)) }} -j$(nproc)
+      - run: ${{ case(matrix.cudf-channel == 'nightly', 'pixi run -e nightly-runner nightly-run env CUDAARCHS=100', '') }} make ${{ matrix.variant == 'legacy' && format('legacy-{0}', matrix.build-type) || case(matrix.compiler == 'gcc', matrix.build-type, format('clang-{0}', matrix.build-type)) }} -j$(nproc)
         if: matrix.environment != 'vcpkg'
         env:
           CUDAARCHS: "100"
