@@ -349,6 +349,8 @@ set(EXTENSION_SOURCES
     src/op/scan/gpu_ingestible.cpp
     src/op/scan/parquet_gpu_ingestible.cpp
     src/op/scan/duckdb_native_gpu_ingestible.cpp
+    src/op/scan/tae_scan_plan.cpp
+    src/op/scan/tae_gpu_ingestible.cpp
     src/op/dynamic_filter/dynamic_filter_publish_plan.cpp
     src/op/dynamic_filter/dynamic_filter_publisher.cpp
     src/op/dynamic_filter/sirius_dynamic_filter.cpp
@@ -608,6 +610,7 @@ foreach(_target sirius_extension sirius_loadable_extension)
     telemetry_bridge
     core_functions_extension
     parquet_extension
+    tae_scanner_extension
     simpatico)
 
   target_link_libraries(${_target} nvcomp)
