@@ -7,8 +7,8 @@
 	ignore = dirty
 [submodule "substrait"]
 	path = substrait
-	url = https://github.com/sirius-db/duckdb-substrait-extension.git
-	branch = main
+	url = https://github.com/matrixorigin/duckdb-substrait.git
+	branch = feature/26155-substrait-anti-joins
 [submodule "cucascade"]
 	path = cucascade
 	url = https://github.com/NVIDIA/cuCascade.git
@@ -29,3 +29,6 @@
 [submodule "starrocks/brpc"]
 	path = experimental/starrocks/brpc
 	url = https://github.com/apache/brpc
+[submodule "tae-scanner"]
+	path = tae-scanner
+	url = https://github.com/matrixorigin/duckdb-tae-scanner.git
