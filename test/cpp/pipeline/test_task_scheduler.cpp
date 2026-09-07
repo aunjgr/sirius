@@ -199,52 +199,7 @@ TEST_CASE("Task scheduler executes tasks through pipeline_queue", "[task_schedul
   executor.stop();
 }
 
-TEST_CASE("GPU executor serializes complete tasks within one pipeline",
-          "[task_scheduler][pipeline_execution_gate]")
-{
-  auto manager = make_small_test_memory_manager();
-  sirius::exec::thread_pool_config gpu_config{2};
-  sirius::exec::thread_pool_config scan_config{1};
-  task_scheduler executor(gpu_config, scan_config, *manager);
-
-  duckdb::DuckDB db(nullptr);
-  duckdb::Connection con(db);
-  sirius::sirius_interface sirius_iface(*con.context);
-  sirius::sirius_engine engine(*con.context, sirius_iface);
-  auto pipeline = duckdb::make_shared_ptr<sirius_pipeline>(engine);
-  overlap_tracking_operator op;
-  sirius_pipeline_build_state build_state;
-  build_state.set_pipeline_source(*pipeline, op);
-  build_state.add_pipeline_operator(*pipeline, op);
-  build_state.set_pipeline_sink(*pipeline, &op, 0);
-  op.set_pipeline(pipeline);
-
-  auto global_state = std::make_shared<gpu_pipeline_task_global_state>(pipeline);
-  pipeline->mark_task_created();
-  pipeline->mark_task_created();
-  executor.start();
-  for (uint64_t task_id = 0; task_id < 2; ++task_id) {
-    auto input = std::make_unique<pipelineable_operator_data>(
-      std::vector<std::shared_ptr<cucascade::data_batch>>{});
-    auto local_state = std::make_unique<gpu_pipeline_task_local_state>(std::move(input));
-    executor.schedule(
-      std::make_unique<gpu_pipeline_task>(task_id,
-                                          std::vector<cucascade::shared_data_repository*>{},
-                                          std::move(local_state),
-                                          global_state));
-  }
-
-  auto const deadline = std::chrono::steady_clock::now() + 10s;
-  while (op.executed.load() < 2 && std::chrono::steady_clock::now() < deadline) {
-    std::this_thread::sleep_for(10ms);
-  }
-  executor.stop();
-
-  REQUIRE(op.executed.load() == 2);
-  CHECK(op.max_active.load() == 1);
-}
-
-TEST_CASE("GPU executor serializes tasks in one PARTITION pipeline",
+TEST_CASE("GPU executor serializes complete tasks within one PARTITION pipeline",
           "[task_scheduler][pipeline_execution_gate][partition]")
 {
   auto manager = make_small_test_memory_manager();
