@@ -244,7 +244,7 @@ TEST_CASE("GPU executor serializes complete tasks within one pipeline",
   CHECK(op.max_active.load() == 1);
 }
 
-TEST_CASE("GPU executor overlaps tasks in one reentrant PARTITION pipeline",
+TEST_CASE("GPU executor serializes tasks in one PARTITION pipeline",
           "[task_scheduler][pipeline_execution_gate][partition]")
 {
   auto manager = make_small_test_memory_manager();
@@ -257,8 +257,7 @@ TEST_CASE("GPU executor overlaps tasks in one reentrant PARTITION pipeline",
   sirius::sirius_interface sirius_iface(*con.context);
   sirius::sirius_engine engine(*con.context, sirius_iface);
   auto pipeline = duckdb::make_shared_ptr<sirius_pipeline>(engine);
-  auto barrier  = std::make_shared<cross_pipeline_overlap>();
-  overlap_tracking_operator op(barrier, SiriusPhysicalOperatorType::PARTITION);
+  overlap_tracking_operator op(nullptr, SiriusPhysicalOperatorType::PARTITION);
   sirius_pipeline_build_state build_state;
   build_state.set_pipeline_source(*pipeline, op);
   build_state.add_pipeline_operator(*pipeline, op);
@@ -281,14 +280,13 @@ TEST_CASE("GPU executor overlaps tasks in one reentrant PARTITION pipeline",
   }
 
   auto const deadline = std::chrono::steady_clock::now() + 10s;
-  {
-    std::unique_lock lock(barrier->mutex);
-    REQUIRE(barrier->cv.wait_until(lock, deadline, [&] { return barrier->max_active >= 2; }));
+  while (op.executed.load() < 2 && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(10ms);
   }
   executor.stop();
 
   REQUIRE(op.executed.load() == 2);
-  CHECK(op.max_active.load() == 2);
+  CHECK(op.max_active.load() == 1);
 }
 
 TEST_CASE("GPU executor runs independent pipelines on separate streams",
