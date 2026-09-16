@@ -729,7 +729,7 @@ endif()
 # topology_discovery into its own static target, and PR #150 split the
 # cudf-coupled code into cucascade_cudf_static — list both here so the export
 # set covers the full dependency chain.
-add_library(sirius_embed STATIC src/embedding/control.cpp src/embedding/c_api.cpp
+add_library(sirius_embed STATIC src/embedding/control.cpp src/embedding/input.cpp src/embedding/c_api.cpp
                                src/embedding/runtime.cpp)
 add_library(Sirius::embed ALIAS sirius_embed)
 target_compile_features(sirius_embed PRIVATE cxx_std_20)
@@ -1019,7 +1019,8 @@ add_executable(sirius_unittest ${TEST_SOURCES})
 # consumer below separately proves the real static dependency/link boundary.
 add_executable(sirius_native_control_unittest
   test/cpp/exec/execution_evidence_unittest.cpp
-  test/cpp/embedding/test_native_control.cpp src/embedding/control.cpp)
+  test/cpp/embedding/test_native_control.cpp test/cpp/embedding/test_native_input.cpp
+  src/embedding/control.cpp src/embedding/input.cpp)
 target_compile_features(sirius_native_control_unittest PRIVATE cxx_std_20)
 target_include_directories(sirius_native_control_unittest PRIVATE
   "${CMAKE_SOURCE_DIR}/third_party/catch" "${CMAKE_CURRENT_SOURCE_DIR}/src/include")
