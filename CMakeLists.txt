@@ -265,6 +265,9 @@ endif()
 
 # cmake-format: off
 set(EXTENSION_SOURCES
+    src/embedding/control.cpp
+    src/embedding/input.cpp
+    src/embedding/native_gpu.cpp
     src/compression/compressed_representation.cpp
     src/compression/compressed_scan.cpp
     src/compression/compression_converters.cpp
@@ -486,6 +489,7 @@ set(EXTENSION_SOURCES
 
 # Deleting src/legacy/ cleanly removes legacy build support.
 set(CUDA_SOURCES
+    src/cuda/scan/native_mo_input.cu
     src/op/partition/crc32_partition_hash.cu
     src/op/scan/equality_delete_mask.cu
     src/cuda/dense_count_join_impl.cu
@@ -729,7 +733,7 @@ endif()
 # topology_discovery into its own static target, and PR #150 split the
 # cudf-coupled code into cucascade_cudf_static — list both here so the export
 # set covers the full dependency chain.
-add_library(sirius_embed STATIC src/embedding/control.cpp src/embedding/c_api.cpp
+add_library(sirius_embed STATIC src/embedding/c_api.cpp
                                src/embedding/runtime.cpp)
 add_library(Sirius::embed ALIAS sirius_embed)
 target_compile_features(sirius_embed PRIVATE cxx_std_20)
@@ -1019,12 +1023,22 @@ add_executable(sirius_unittest ${TEST_SOURCES})
 # consumer below separately proves the real static dependency/link boundary.
 add_executable(sirius_native_control_unittest
   test/cpp/exec/execution_evidence_unittest.cpp
-  test/cpp/embedding/test_native_control.cpp src/embedding/control.cpp)
+  test/cpp/embedding/test_native_control.cpp test/cpp/embedding/test_native_input.cpp
+  src/embedding/control.cpp src/embedding/input.cpp)
 target_compile_features(sirius_native_control_unittest PRIVATE cxx_std_20)
 target_include_directories(sirius_native_control_unittest PRIVATE
   "${CMAKE_SOURCE_DIR}/third_party/catch" "${CMAKE_CURRENT_SOURCE_DIR}/src/include")
 target_link_libraries(sirius_native_control_unittest PRIVATE Threads::Threads)
 add_executable(sirius_c_smoke test/cpp/embedding/c_smoke.c)
+add_executable(sirius_native_gpu_unittest
+  test/cpp/exec/execution_evidence_unittest.cpp test/cpp/embedding/test_native_gpu.cpp
+  src/embedding/c_api.cpp)
+target_compile_features(sirius_native_gpu_unittest PRIVATE cxx_std_20)
+target_include_directories(sirius_native_gpu_unittest PRIVATE
+  "${CMAKE_SOURCE_DIR}/third_party/catch" "${CMAKE_CURRENT_SOURCE_DIR}/src/include"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/src/compression/simpatico_codegen/include")
+target_compile_definitions(sirius_native_gpu_unittest PRIVATE SIRIUS_PROJECT_ROOT="${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(sirius_native_gpu_unittest PRIVATE sirius_extension duckdb_static dummy_static_extension_loader Threads::Threads)
 set_target_properties(sirius_c_smoke PROPERTIES C_STANDARD 99 LINKER_LANGUAGE CXX)
 target_link_libraries(sirius_c_smoke PRIVATE Sirius::embed)
 set_property(TARGET sirius_c_smoke APPEND PROPERTY LINK_DEPENDS

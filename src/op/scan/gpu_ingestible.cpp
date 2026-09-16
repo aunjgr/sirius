@@ -26,6 +26,7 @@
 #include <utility>
 
 namespace sirius::op::scan {
+std::unique_ptr<op::operator_data> gpu_ingestible::live_claim() { return nullptr; }
 
 filtered_table gpu_ingestible::materialize_table(
   const op::scan::scan_operator_input& split,

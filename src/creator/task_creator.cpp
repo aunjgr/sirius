@@ -18,6 +18,7 @@
 
 #include "log/logging.hpp"
 #include "memory/topology_index.hpp"
+#include "op/scan/sirius_gpu_scan_operator.hpp"
 #include "op/scan/sirius_gpu_scan_operator_data.hpp"
 #include "op/sirius_physical_delim_join.hpp"
 #include "pipeline/gpu_pipeline_task.hpp"
@@ -276,12 +277,15 @@ task_creator::compute_pipeline_priorities(const sirius::planner::query& query) c
 
 void task_creator::drain_pending_tasks(sirius::query_id_t query_id)
 {
+  auto state = get_query_task_global_state(query_id);
+  if (state)
+    for (auto const& [node, wake] : state->live_wakes)
+      wake->close();
   // Drop only THIS query's queued requests. No interrupt()/reactivate(): the queue stays open
   // the whole time, so other queries' producers and consumers are never stalled.
   _task_creation_queue.drain(
     exec::query_index{static_cast<exec::query_key>(sirius::value_of(query_id))});
 
-  auto state = get_query_task_global_state(query_id);
   if (!state) { return; }
 
   // Wait out this query's in-flight creation lambdas — the per-query stand-in for
@@ -422,15 +426,33 @@ std::pair<sirius::query_id_t, exec::queue_priority> request_keys_for(
 void task_creator::schedule(op::sirius_physical_operator* node)
 {
   const auto [query_id, priority] = request_keys_for(node);
-  auto request                    = std::make_unique<task_creation_request>();
-  request->node                   = node;
-  request->query_id               = query_id;
-  request->priority               = priority;
+  // Keep ordinary downstream scheduling off the query-registry mutex. Only
+  // GPU scan sources can have a native producer subscription.
+  if (node && node->type == op::SiriusPhysicalOperatorType::GPU_SCAN) {
+    if (auto state = get_query_task_global_state(query_id)) {
+      if (auto it = state->live_wakes.find(node); it != state->live_wakes.end()) {
+        it->second->wake();
+        return;
+      }
+    }
+  }
+  auto request      = std::make_unique<task_creation_request>();
+  request->node     = node;
+  request->query_id = query_id;
+  request->priority = priority;
   _task_creation_queue.push(std::move(request));
 }
 
 void task_creator::schedule(op::sirius_physical_operator* node, sirius::query_id_t query_id)
 {
+  if (node && node->type == op::SiriusPhysicalOperatorType::GPU_SCAN) {
+    if (auto state = get_query_task_global_state(query_id)) {
+      if (auto it = state->live_wakes.find(node); it != state->live_wakes.end()) {
+        it->second->wake();
+        return;
+      }
+    }
+  }
   const auto [_, priority] = request_keys_for(node);
   auto request             = std::make_unique<task_creation_request>();
   request->node            = node;
@@ -490,6 +512,11 @@ void task_creator::schedule_lookahead(std::optional<int> device_id_hint)
       continue;
     }
     if (hint.value().hint == op::TaskCreationHint::READY) {
+      if (auto it = state->live_wakes.find(node); it != state->live_wakes.end()) {
+        it->second->wake();
+        ++state->index_of_next_lookahead;
+        return;
+      }
       SIRIUS_LOG_TRACE("Task Creator: scheduling lookahead for operator {} (id {})",
                        node->get_name(),
                        node->get_operator_id());
@@ -552,6 +579,7 @@ void task_creator::manager_loop()
       for (auto& visited : visited_pipelines) {
         visited->update_pipeline_status(false);
       }
+      if (request->live_wake) request->live_wake->complete();
       continue;
     }
 
@@ -560,7 +588,19 @@ void task_creator::manager_loop()
     query_state->enter_in_flight();
     // Dispatch the task creation work to the pool
     _bounded_pool->dispatch(
-      std::move(slot), [this, node, request_kind, query_state = std::move(query_state)]() mutable {
+      std::move(slot),
+      [this,
+       node,
+       request_kind,
+       live_wake   = std::move(request->live_wake),
+       query_state = std::move(query_state)]() mutable {
+        struct wake_guard {
+          std::shared_ptr<embedding::source_wakeup> wake;
+          ~wake_guard()
+          {
+            if (wake) wake->complete();
+          }
+        } wake_done{std::move(live_wake)};
         // Released on every exit path, including the catch below, so a throwing creation can
         // never strand drain_pending_tasks() waiting forever.
         struct in_flight_guard {
@@ -782,5 +822,37 @@ void task_creator::manager_loop()
 }
 
 uint64_t task_creator::get_next_task_id() { return _task_id.fetch_add(1); }
+
+void task_creator::arm_live_inputs(const planner::query& query)
+{
+  auto state = get_query_task_global_state(query.query_id());
+  if (!state) throw std::runtime_error("live scan query state is missing");
+  // Populate the entire immutable map before publishing any callback.
+  for (auto* node : query.get_scan_operators()) {
+    if (node->type != op::SiriusPhysicalOperatorType::GPU_SCAN) continue;
+    auto& scan = node->Cast<op::scan::sirius_gpu_scan_operator>();
+    if (!scan.get_ingestible().is_live()) continue;
+    auto [id, priority]                         = request_keys_for(node);
+    std::weak_ptr<query_task_global_state> weak = state;
+    auto wake                                   = std::make_shared<embedding::source_wakeup>(
+      [this, weak, node, id, priority] {
+        auto generation = weak.lock();
+        if (!generation) return;
+        auto request       = std::make_unique<task_creation_request>();
+        request->node      = node;
+        request->query_id  = id;
+        request->priority  = priority;
+        request->live_wake = generation->live_wakes.at(node);
+        if (!_task_creation_queue.push(std::move(request)))
+          throw std::runtime_error("live input scheduling queue is stopped");
+      },
+      [weak](std::exception_ptr error) {
+        if (auto generation = weak.lock()) generation->completion_handler->report_error(error);
+      });
+    state->live_wakes.emplace(node, std::move(wake));
+  }
+  for (auto const& [node, wake] : state->live_wakes)
+    node->Cast<op::scan::sirius_gpu_scan_operator>().get_ingestible().live_subscribe(wake);
+}
 
 }  // namespace sirius::creator
