@@ -37,6 +37,8 @@ class tae_ingestible_table_info final : public ingestible_table_info {
   duckdb::ClientContext* context = nullptr;
 
   [[nodiscard]] std::span<std::string const> column_names() const override { return names; }
+  // Diagnostics identify the scan kind without exposing manifest/object paths.
+  [[nodiscard]] std::string display_name() const override { return "tae_scan"; }
   [[nodiscard]] std::span<std::string const> file_paths() const override
   {
     return bind_data ? std::span<std::string const>(object_paths_) : std::span<std::string const>{};

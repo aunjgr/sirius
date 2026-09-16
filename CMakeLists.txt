@@ -92,6 +92,10 @@ find_package(raft REQUIRED CONFIG) # raft must be found before cuvs
 find_package(cuvs REQUIRED CONFIG)
 find_package(spdlog REQUIRED CONFIG)
 find_package(yaml-cpp REQUIRED CONFIG)
+# CRoaring decodes Iceberg Puffin deletion vectors (portable Roaring). Host-side
+# only; the same library duckdb-iceberg uses for the same blob, so the two
+# readers agree by construction.
+find_package(roaring REQUIRED CONFIG)
 find_package(absl REQUIRED CONFIG)
 find_package(PkgConfig REQUIRED)
 find_package(OpenSSL REQUIRED)
@@ -114,6 +118,15 @@ endif()
 # The pixi build has no such target and links the conda shared libnvrtc.so.
 if(VCPKG_BUILD)
   find_package(nvrtc CONFIG REQUIRED)
+  find_package(nvjitlink CONFIG REQUIRED)
+  # FindCUDAToolkit also adds nvJitLink through cuSPARSE's link interface.
+  get_target_property(_cusparse_links CUDA::cusparse INTERFACE_LINK_LIBRARIES)
+  if(_cusparse_links)
+    list(TRANSFORM _cusparse_links REPLACE "^CUDA::nvJitLink$"
+                                           "nvjitlink::nvjitlink_static")
+    set_target_properties(CUDA::cusparse PROPERTIES INTERFACE_LINK_LIBRARIES
+                                                    "${_cusparse_links}")
+  endif()
 endif()
 
 # --- cuCollections (cuco) --- #
@@ -130,9 +143,9 @@ else()
   include(FetchContent)
   FetchContent_Declare(
     cuco
-    URL https://github.com/NVIDIA/cuCollections/archive/f517bbb1277753b1852dfd388993383e401eaa38.tar.gz
+    URL https://github.com/NVIDIA/cuCollections/archive/0883368d39296f3bef3a058033141bcc642c5c54.tar.gz
     URL_HASH
-      SHA256=d17e2f6d58cfb2cd473efcbd741c633e7607717102cedc08173a4a69bb2a8ba9
+      SHA256=4ec8320a0372839b991f0b431c7f8bf0e770006cb3c8631c6e373c434471fd45
     SOURCE_SUBDIR do-not-build)
   FetchContent_MakeAvailable(cuco)
   # SOURCE_SUBDIR do-not-build populates headers without running cuco's CMake,
@@ -148,7 +161,14 @@ endif()
 
 pkg_check_modules(NUMA REQUIRED IMPORTED_TARGET numa)
 pkg_check_modules(LIBURING REQUIRED IMPORTED_TARGET liburing)
-pkg_check_modules(CURL REQUIRED IMPORTED_TARGET libcurl)
+if(VCPKG_BUILD)
+  # The CMake target includes curl's private static dependencies.
+  find_package(CURL CONFIG REQUIRED)
+  set(SIRIUS_CURL_TARGET CURL::libcurl)
+else()
+  pkg_check_modules(CURL REQUIRED IMPORTED_TARGET libcurl)
+  set(SIRIUS_CURL_TARGET PkgConfig::CURL)
+endif()
 
 # cuCascade - GPU Memory Reservation Library (submodule)
 set(BUILD_TESTS
@@ -351,6 +371,12 @@ set(EXTENSION_SOURCES
     src/op/scan/duckdb_native_gpu_ingestible.cpp
     src/op/scan/tae_scan_plan.cpp
     src/op/scan/tae_gpu_ingestible.cpp
+    src/op/scan/iceberg_metadata_reader.cpp
+    src/op/scan/puffin_reader.cpp
+    src/op/scan/positional_delete_filter.cpp
+    src/op/scan/equality_delete_filter.cpp
+    src/op/scan/iceberg_delete_pipeline.cpp
+    src/op/scan/iceberg_gpu_ingestible.cpp
     src/op/dynamic_filter/dynamic_filter_publish_plan.cpp
     src/op/dynamic_filter/dynamic_filter_publisher.cpp
     src/op/dynamic_filter/sirius_dynamic_filter.cpp
@@ -461,6 +487,7 @@ set(EXTENSION_SOURCES
 # Deleting src/legacy/ cleanly removes legacy build support.
 set(CUDA_SOURCES
     src/op/partition/crc32_partition_hash.cu
+    src/op/scan/equality_delete_mask.cu
     src/cuda/dense_count_join_impl.cu
     src/cuda/dynamic_filter_replica_transfer.cu
     src/cuda/sirius_dynamic_bloom_filter.cu
@@ -607,6 +634,7 @@ foreach(_target sirius_extension sirius_loadable_extension)
     cuCascade::cucascade
     cuCascade::cucascade_cudf
     yaml-cpp::yaml-cpp
+    roaring::roaring
     telemetry_bridge
     core_functions_extension
     parquet_extension
@@ -614,16 +642,47 @@ foreach(_target sirius_extension sirius_loadable_extension)
     simpatico)
 
   target_link_libraries(${_target} nvcomp)
+  # Corrosion exposes telemetry_bridge as an INTERFACE target whose concrete
+  # Rust archive is telemetry_bridge-static. Apply WHOLE_ARCHIVE to that real
+  # archive so the unreferenced NVTX static-injection shim reaches the final
+  # loadable extension instead of being dropped at the nested archive boundary.
+  set_property(
+    TARGET ${_target} PROPERTY "LINK_LIBRARY_OVERRIDE_telemetry_bridge-static"
+                               WHOLE_ARCHIVE)
 
   add_dependencies(${_target} duckdb_static)
 endforeach()
 
 # Additional libraries only needed by the static extension
 target_link_libraries(sirius_extension PkgConfig::NUMA PkgConfig::LIBURING
-                      PkgConfig::CURL OpenSSL::Crypto absl::any_invocable)
+                      ${SIRIUS_CURL_TARGET} OpenSSL::Crypto absl::any_invocable)
+
+# `sirius_extension` is itself an archive, so its LINK_LIBRARY_OVERRIDE does not
+# perform a final link. Carry the concrete Rust archive as a transitive
+# WHOLE_ARCHIVE item instead; DuckDB and every other final consumer then retain
+# the static NVTX pointer shim as well.
+target_link_libraries(sirius_extension
+                      "$<LINK_LIBRARY:WHOLE_ARCHIVE,telemetry_bridge-static>")
+
+# A statically embedded Sirius cannot give NVTX a DSO path. Its private dlopen
+# interposer maps one sentinel path to the running executable instead. Carry
+# both symbols into the final executable's dynamic symbol table so dependency
+# images such as libcudf can resolve the Quent initializer from that handle.
+target_link_options(
+  sirius_extension INTERFACE
+  "LINKER:--export-dynamic-symbol=InitializeInjectionNvtx2"
+  "LINKER:--export-dynamic-symbol=dlopen")
 
 target_link_libraries(sirius_loadable_extension PkgConfig::LIBURING
-                      PkgConfig::CURL OpenSSL::Crypto)
+                      ${SIRIUS_CURL_TARGET} OpenSSL::Crypto)
+
+# NVTX's runtime injection lookup dlopens the path named by
+# NVTX_INJECTION64_PATH and resolves InitializeInjectionNvtx2 from it. Export
+# the statically embedded Quent entry point from the loadable extension so
+# Sirius can point NVTX at its own already-loaded DSO without deploying a second
+# injection library.
+target_link_options(sirius_loadable_extension PRIVATE
+                    "LINKER:--export-dynamic-symbol=InitializeInjectionNvtx2")
 
 # The sirius-sys + sirius Rust crates are built by cargo, not CMake (unlike the
 # telemetry bridge above, which CMake drives via Corrosion). Their build.rs
@@ -695,6 +754,8 @@ set(TEST_SOURCES
     test/cpp/config/test_context.cpp
     test/cpp/config/test_object_store_config.cpp
     test/cpp/config/test_topology_config.cpp
+    test/cpp/creator/test_task_creator_query_state.cpp
+    test/cpp/creator/test_task_creator_schedule_validation.cpp
     test/cpp/data/test_convertible_data_batch.cpp
     test/cpp/data/test_data_repository_manager_registry.cpp
     test/cpp/data/test_convertible_gpu_pipeline_task.cpp
@@ -867,9 +928,11 @@ set(TEST_SOURCES
     test/cpp/pipeline/test_pipeline_build_context.cpp
     test/cpp/pipeline/test_pipeline_dynamic_filter_native_shape.cpp
     test/cpp/pipeline/test_pipeline_schedule_canonical.cpp
+    test/cpp/pipeline/test_per_query_completion_handler.cpp
     test/cpp/pipeline/test_plan_printer.cpp
     test/cpp/pipeline/test_repository_wiring_materializer.cpp
     test/cpp/pipeline/test_streaming_sink_root.cpp
+    test/cpp/pipeline/test_task_index_keys.cpp
     test/cpp/pipeline/test_task_scheduler.cpp
     test/cpp/scan/bench_decode_codecs.cpp
     test/cpp/scan/test_can_serve_with_columns.cpp
@@ -881,6 +944,9 @@ set(TEST_SOURCES
     test/cpp/scan/test_duckdb_native_host_backed_decode.cpp
     test/cpp/scan/test_duckdb_native_walker.cpp
     test/cpp/scan/test_dynamic_filter_merge.cpp
+    test/cpp/scan/test_iceberg_batch_layout.cpp
+    test/cpp/scan/test_iceberg_equality_delete.cpp
+    test/cpp/scan/test_puffin_reader.cpp
     test/cpp/scan/test_gpu_decode_alp.cpp
     test/cpp/scan/test_gpu_decode_bitpacking.cpp
     test/cpp/scan/test_gpu_decode_rle.cpp
@@ -937,6 +1003,11 @@ endif()
 # test/cpp/orphan_test_allowlist.txt.
 
 add_executable(sirius_unittest ${TEST_SOURCES})
+
+# Only the TAE metadata regression includes scanner bind-data headers directly.
+set_source_files_properties(
+  test/cpp/integration/test_gpu_execution_tae_scan.cpp
+  PROPERTIES INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/tae-scanner/include")
 add_executable(
   sirius_execution_evidence_unittest
   test/cpp/exec/execution_evidence_unittest.cpp
@@ -982,7 +1053,8 @@ link_extension_libraries(sirius_unittest "")
 # offline/Go-less builds skip it; the harness calls in unittest.cpp are guarded
 # by SIRIUS_HAVE_TESTCONTAINERS.
 if(SIRIUS_BUILD_S3_TESTS)
-  target_link_libraries(sirius_unittest testcontainers_native PkgConfig::CURL)
+  target_link_libraries(sirius_unittest testcontainers_native
+                        ${SIRIUS_CURL_TARGET})
   target_compile_definitions(sirius_unittest
                              PRIVATE SIRIUS_HAVE_TESTCONTAINERS=1)
 endif()
