@@ -274,6 +274,7 @@ struct sirius_config {
   void set_scan_manager_config(scan_manager::scan_manager_config config) noexcept;
 
   [[nodiscard]] const exec::thread_pool_config& get_gpu_pipeline_executor_config() const noexcept;
+  void set_gpu_pipeline_executor_threads(uint32_t threads);
 
   [[nodiscard]] const exec::downgrade_executor_config& get_downgrade_executor_config()
     const noexcept;

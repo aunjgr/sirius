@@ -29,6 +29,7 @@
 #include "op/sirius_physical_operator_type.hpp"
 #include "op/sirius_physical_partition.hpp"
 #include "op/sirius_physical_result_collector.hpp"
+#include "pipeline/gpu_stream_quiescence_error.hpp"
 #include "pipeline/repository_wiring.hpp"
 #include "pipeline/sirius_pipeline_converter.hpp"
 #include "pipeline/sirius_plan_printer.hpp"
@@ -208,6 +209,15 @@ void sirius_engine::execute()
   try {
     future.get();
     sirius_ctx->get_task_scheduler().wait_for_completion(query_id_);
+    if (auto fatal = completion_handler_->fatal_error()) {
+      sirius_ctx->mark_runtime_unavailable();
+      std::rethrow_exception(fatal);
+    }
+  } catch (const pipeline::gpu_stream_quiescence_error&) {
+    // Seal later windows before the owning query thread drains the pools.
+    sirius_ctx->mark_runtime_unavailable();
+    sirius_ctx->get_task_scheduler().drain_after_error(query_id_);
+    throw;
   } catch (const std::exception& e) {
     SIRIUS_LOG_ERROR("Error executing query: {}", e.what());
     // Drain all in-flight GPU tasks before returning.  QueryEnd() will call
@@ -215,10 +225,18 @@ void sirius_engine::execute()
     // this drain, tasks still running in the thread pool hold raw pointers to
     // those repositories and cause a use-after-free / heap corruption.
     sirius_ctx->get_task_scheduler().drain_after_error(query_id_);
+    if (auto fatal = completion_handler_->fatal_error()) {
+      sirius_ctx->mark_runtime_unavailable();
+      std::rethrow_exception(fatal);
+    }
     throw;
   } catch (...) {
     SIRIUS_LOG_ERROR("Unknown error executing query");
     sirius_ctx->get_task_scheduler().drain_after_error(query_id_);
+    if (auto fatal = completion_handler_->fatal_error()) {
+      sirius_ctx->mark_runtime_unavailable();
+      std::rethrow_exception(fatal);
+    }
     throw;
   }
 
