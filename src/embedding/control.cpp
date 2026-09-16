@@ -214,7 +214,10 @@ void engine_control::process(engine_backend& backend,
       q->phase = query_phase::RUNNING;
     }
     driver->run(q->stop.get_token(), q->deadline);
-    if (q->stop.stop_requested()) result = error(SIRIUS_CANCELLED, "native query cancelled");
+    if (q->stop.stop_requested())
+      result = error(SIRIUS_CANCELLED, "native query cancelled");
+    else if (clock::now() >= q->deadline)
+      result = error(SIRIUS_TIMEOUT, "native query deadline expired");
   } catch (...) {
     result = current_error();
   }

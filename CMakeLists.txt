@@ -1027,6 +1027,9 @@ target_link_libraries(sirius_native_control_unittest PRIVATE Threads::Threads)
 add_executable(sirius_c_smoke test/cpp/embedding/c_smoke.c)
 set_target_properties(sirius_c_smoke PROPERTIES C_STANDARD 99 LINKER_LANGUAGE CXX)
 target_link_libraries(sirius_c_smoke PRIVATE Sirius::embed)
+set_property(TARGET sirius_c_smoke APPEND PROPERTY LINK_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/scripts/export_embed_link.py"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/include/sirius_c.h")
 add_custom_command(TARGET sirius_c_smoke POST_BUILD
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/export_embed_link.py"
     --ninja "${CMAKE_MAKE_PROGRAM}" --build "${CMAKE_BINARY_DIR}"

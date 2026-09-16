@@ -31,7 +31,8 @@ Building `sirius_c_smoke` also generates `extension/sirius/embedding-sdk`:
 The exporter obtains dependencies from the CMake/Ninja C-consumer link command,
 not a manually duplicated library list. These are **build-tree artifacts** with
 absolute paths tied to this Pixi/native generation. Relocatable MO runtime
-packaging belongs to migration stage 7. Regenerate the SDK after native changes;
+packaging belongs to migration stage 7. Rebuilding the C consumer regenerates the
+SDK after native, public-header or exporter changes;
 do not move the response file or reuse it with an unrelated toolchain.
 
 An external CMake consumer uses `find_package(SiriusEmbed CONFIG REQUIRED)`,
@@ -108,7 +109,21 @@ implementation. They cover thread affinity, cancellation, capacity, failure,
 deadline-versus-wait-timeout distinction, fatal owner retention and credit
 lifetime. Fatal retention runs in a test-owned child process because process
 death is deliberately its final cleanup owner. The C smoke test separately
-proves real native linkage and GPU runtime creation/close.
+proves real native linkage, the public unsupported-query outcome, rejection of
+a second simultaneous runtime, and GPU runtime shutdown/recreation with the
+default two workers followed by one worker.
+
+### Foundation lifecycle review
+
+| Layer | Ownership, termination or bound |
+| --- | --- |
+| C handles and coordinator | Successful close releases handles exactly once; failed close preserves them. Query drivers and the backend are destroyed on the coordinator after cleanup; unsafe GPU owners are retained for process restart. |
+| Control waits | Call waits have explicit timeouts; queued cancellation bypasses active work. Drivers must honor the supplied stop token and deadline. A normal driver return after the deadline is reported as TIMEOUT, not success. |
+| Retained state | At most 17 live query handles, each with at most a 16 MiB copied plan. Buffer leases retain both byte and count credit until final release. |
+
+The deadline regression is tested with a driver that returns normally when its
+deadline expires, followed by successful cleanup. These checks cover the
+foundation's ownership and scheduling contracts, not the future GPU data path.
 
 The four-stage native round is not complete until a C caller can feed actual
 MO inputs, run an admitted TAE query, drain bounded results, and cancel the full

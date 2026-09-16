@@ -211,6 +211,22 @@ TEST_CASE("expired native queries are releasable rather than confused with wait 
   CHECK(f.control.inspect().live_queries == 0);
 }
 
+TEST_CASE("native execution returning at its deadline is not successful", "[native_control]")
+{
+  fixture f;
+  f.record->block = true;
+  auto q          = f.control.create("ok", 2s);
+  f.queries.push_back(q);
+  REQUIRE(f.control.prepare(q, 10s).code == SIRIUS_OK);
+  REQUIRE(f.control.start(q).code == SIRIUS_OK);
+  REQUIRE(f.control.wait(q, 10s).code == SIRIUS_TIMEOUT);
+  CHECK(f.record->ran == 1);
+  CHECK(f.record->finished == 1);
+  CHECK(f.record->destroyed == 1);
+  REQUIRE(f.control.close_query(q, 10s).code == SIRIUS_OK);
+  CHECK(f.control.inspect().live_queries == 0);
+}
+
 TEST_CASE("unprovable native cleanup retains owners and seals admission",
           "[native_control][fatal_process]")
 {
