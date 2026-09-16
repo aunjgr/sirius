@@ -19,6 +19,7 @@
 #include <atomic>
 #include <exception>
 #include <future>
+#include <mutex>
 
 namespace sirius::pipeline {
 
@@ -121,10 +122,30 @@ class completion_handler {
    */
   [[nodiscard]] bool has_error() const noexcept { return _has_error.load(); }
 
+  // A root completion signal is not GPU quiescence. Keep fatal status even
+  // when another terminal signal already satisfied the one-shot promise.
+  void report_fatal_error(std::exception_ptr error) noexcept
+  {
+    {
+      std::lock_guard lock(_fatal_mutex);
+      if (!_fatal_error) _fatal_error = error;
+    }
+    _has_error.store(true);
+    report_error(std::move(error));
+  }
+
+  [[nodiscard]] std::exception_ptr fatal_error() const noexcept
+  {
+    std::lock_guard lock(_fatal_mutex);
+    return _fatal_error;
+  }
+
  private:
   std::promise<void> _promise;
   std::atomic<bool> _completed{false};
   std::atomic<bool> _has_error{false};
+  mutable std::mutex _fatal_mutex;
+  std::exception_ptr _fatal_error;
 };
 
 }  // namespace sirius::pipeline
