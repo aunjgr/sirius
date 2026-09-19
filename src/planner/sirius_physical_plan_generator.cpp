@@ -33,6 +33,8 @@
 #include "duckdb/planner/operator/logical_extension_operator.hpp"
 #include "duckdb/planner/table_filter.hpp"
 #include "duckdb/storage/storage_manager.hpp"
+#include "embedding/native_gpu.hpp"
+#include "embedding/plan_bindings.hpp"
 #include "io/uri_parser.hpp"
 #include "log/logging.hpp"
 #include "op/dynamic_filter/sirius_dynamic_filter.hpp"
@@ -453,7 +455,7 @@ void wrap_table_scan_source(
                               sirius::op::scan::dynamic_filter_apply_mode::membership_masks_only,
                               sirius_ctx.get());
     replace_slot = true;
-  } else if (fn == "tae_scan") {
+  } else if (fn == "tae_scan" || fn == sirius::embedding::embedded_tae_function) {
     // TAE applies its zone-map filters while reading metadata, then evaluates
     // the complete AST against the decoded batch.
     leaf         = make_gpu_scan_leaf(build_tae_table_info(scan, context),
@@ -461,6 +463,17 @@ void wrap_table_scan_source(
                               op_params,
                               sirius::op::scan::dynamic_filter_apply_mode::include_ast_row_masks,
                               sirius_ctx.get());
+    replace_slot = true;
+  } else if (fn == sirius::embedding::embedded_mo_function) {
+    auto const* bind =
+      dynamic_cast<sirius::embedding::embedded_mo_bind_data*>(scan.bind_data.get());
+    if (!bind || !bind->input)
+      throw std::runtime_error("embedded MO scan is missing its native input binding");
+    leaf = duckdb::make_uniq<sirius::op::scan::sirius_gpu_scan_operator>(
+      scan.types,
+      scan.estimated_cardinality,
+      sirius::embedding::make_native_ingestible(bind->input),
+      sirius_ctx.get());
     replace_slot = true;
   } else {
     throw std::runtime_error(

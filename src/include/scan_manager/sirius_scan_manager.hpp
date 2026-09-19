@@ -457,15 +457,12 @@ class sirius_scan_manager {
 
   /// \brief Prepare per-scan state for the given query.
   ///
-  /// Walks @p query 's pipelines in scan-operator order. For each GPU parquet
-  /// scan source, the factory builds a split_provider from the operator's
-  /// scan_info, installs a fresh split_connector on the operator, and stores
-  /// the provider in a map keyed by the operator. A driver thread then runs
-  /// the providers SEQUENTIALLY in registration order: provider[0] starts,
-  /// when its future completes provider[1] starts, and so on. Consumers (the
-  /// gpu scan operators) block in split_connector::get_next_split until splits
-  /// arrive or the connector is closed, so no separate wake-up channel is
-  /// needed.
+  /// Walks @p query 's pipelines in scan-operator order and registers the
+  /// metadata slots and connectors. On start, each uncached scan gets one
+  /// bounded per-scan producer thread. A sequencer drains their bounded
+  /// mailboxes in registration order and forwards ready splits to each
+  /// connector. Consumers block in split_connector::get_next_split until a
+  /// split arrives or the connector closes.
   ///
   /// @param query                           The query whose scan operators must be prepared.
   /// @param enable_pinned_zone_map_pruning  Per-query snapshot of the serve-side pruning flag (the
@@ -480,8 +477,7 @@ class sirius_scan_manager {
                          bool enable_pinned_zone_map_pruning,
                          const std::vector<int>& allocated_gpu_ids);
 
-  /// \brief Clear the providers map and join the driver thread if it is
-  ///        still running.
+  /// \brief Stop and join per-scan producers, then clear query-local providers.
   void reset();
 
   /// \brief Start the worker thread pool. Idempotent.

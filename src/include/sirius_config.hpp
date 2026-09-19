@@ -218,6 +218,14 @@ struct telemetry_config {
   std::string nvtx_injection_lib{};
 };
 
+struct embedding_config {
+  /// Shared bound for copied plans, contracts, bindings, manifests, and
+  /// parsed TAE metadata held by native embedded queries.
+  uint64_t metadata_capacity_bytes{256ULL << 20};
+  /// Shared TAE host staging window per active embedded query.
+  uint64_t tae_host_staging_bytes{64ULL << 20};
+};
+
 /// Parameters controlling Simpatico compression for pin_table(tier=>'host').
 /// These settings apply exclusively to cached input-table pinning and have no
 /// effect on spill-path compression (Phase 3).
@@ -296,6 +304,11 @@ struct sirius_config {
     return _compression_config;
   }
 
+  [[nodiscard]] const embedding_config& get_embedding_config() const noexcept
+  {
+    return _embedding_config;
+  }
+
   [[nodiscard]] compression_config& get_compression_config() noexcept
   {
     return _compression_config;
@@ -323,6 +336,7 @@ struct sirius_config {
   exec::downgrade_executor_config _downgrade_executor_config;
   operator_params _operator_params;
   telemetry_config _telemetry_config;
+  embedding_config _embedding_config;
   compression_config _compression_config;
 };
 

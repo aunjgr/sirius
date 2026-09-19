@@ -1724,7 +1724,7 @@ void sirius_scan_manager::start_metadata_processing()
   for (auto* op : _scan_op_order) {
     auto it = _providers_by_op.find(op);
     if (it == _providers_by_op.end()) { continue; }
-    it->second->run(*_dispatcher, _metadata_processor->get_split_provider_bridge(op));
+    it->second->run(_metadata_processor->get_split_provider_bridge(op));
   }
   maybe_start_memory_prefetcher();
 }
@@ -1872,6 +1872,8 @@ void sirius_scan_manager::reset()
   // Stop the prefetcher first: it holds shared_ptrs to the operators'
   // connectors and must not convert batches while per-query state is torn down.
   _prefetcher.reset();
+  for (auto const& [_, provider] : _providers_by_op)
+    if (provider) provider->request_stop();
   _dispatcher->request_stop();
   _dispatcher->wait_for_all();
   _scan_op_order.clear();
