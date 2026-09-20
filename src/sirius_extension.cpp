@@ -811,9 +811,8 @@ void SiriusExtension::GPUExecutionFunction(ClientContext& context,
       gstate.res = run_internal_cpu_fallback_query(
         context, *gstate.conn, data.cpu_fallback_query, gpu_error.RawMessage());
     }
-    auto outcome = gstate.res && !gstate.res->HasError()
-                     ? ::sirius::execution_outcome::SUCCEEDED
-                     : ::sirius::execution_outcome::FAILED;
+    auto outcome = gstate.res && !gstate.res->HasError() ? ::sirius::execution_outcome::SUCCEEDED
+                                                         : ::sirius::execution_outcome::FAILED;
     (void)gstate.execution_evidence->finish(outcome);
     auto end      = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);

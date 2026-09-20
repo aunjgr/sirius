@@ -6,10 +6,10 @@
 #pragma once
 
 #include <data/host_tae_representation.hpp>
-#include <embedding/buffer_budget.hpp>
 #include <duckdb/common/types.hpp>
 #include <duckdb/main/client_context.hpp>
 #include <duckdb/planner/table_filter.hpp>
+#include <embedding/buffer_budget.hpp>
 #include <op/scan/gpu_ingestible.hpp>
 #include <op/scan/tae_scan_plan.hpp>
 

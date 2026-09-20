@@ -120,7 +120,7 @@ struct Context::Impl {
   void bring_up(sirius::sirius_config& config)
   {
     embedded_metadata_capacity = config.get_embedding_config().metadata_capacity_bytes;
-    embedded_tae_host_staging = config.get_embedding_config().tae_host_staging_bytes;
+    embedded_tae_host_staging  = config.get_embedding_config().tae_host_staging_bytes;
     context                    = duckdb::make_shared_ptr<duckdb::SiriusContext>();
     context->initialize(config);
     // Register the builtin + parquet representation converters the GPU scan/result
@@ -343,9 +343,9 @@ std::unique_ptr<EmbeddedPrepared> Context::prepare_embedded(const std::string& b
                                      "TAE manifest column binding mismatch");
         }
         tae_bind->embedded_host_budget = tae_host_budget;
-        binding.tae_host_budget = tae_host_budget;
-        binding.tae = std::move(tae_bind);
-        function    = embedding::embedded_tae_function;
+        binding.tae_host_budget        = tae_host_budget;
+        binding.tae                    = std::move(tae_bind);
+        function                       = embedding::embedded_tae_function;
       }
       impl_->embedded_catalog->declare(read.binding_id, std::move(binding));
       auto view_name = embedded_view_name(generation, read.binding_id);

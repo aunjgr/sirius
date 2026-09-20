@@ -58,9 +58,9 @@ duckdb::unique_ptr<duckdb::FunctionData> bind_tae(duckdb::ClientContext& context
 {
   auto binding = embedded_catalog_for(context)->get(read_id(input));
   if (!binding.tae || binding.input) throw std::runtime_error("binding is not a TAE read");
-  types = {binding.types.begin(), binding.types.end()};
-  names = {binding.names.begin(), binding.names.end()};
-  auto copy = binding.tae->Copy();
+  types          = {binding.types.begin(), binding.types.end()};
+  names          = {binding.names.begin(), binding.names.end()};
+  auto copy      = binding.tae->Copy();
   auto* tae_copy = dynamic_cast<tae::TAEScanBindData*>(copy.get());
   if (tae_copy == nullptr) throw std::runtime_error("invalid embedded TAE bind data copy");
   tae_copy->embedded_host_budget = binding.tae_host_budget;

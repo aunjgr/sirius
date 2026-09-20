@@ -20,8 +20,9 @@
 # The native TAE GPU ingestible shares the scanner's table-function bind data
 # and zone-map helpers. Build the pinned sidecar extension with Sirius so
 # `tae_scan` is registered before Sirius converts its physical plan.
-duckdb_extension_load(tae_scanner SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR}/tae-scanner
-                      INCLUDE_DIR ${CMAKE_CURRENT_LIST_DIR}/tae-scanner/include)
+duckdb_extension_load(
+  tae_scanner SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR}/tae-scanner INCLUDE_DIR
+  ${CMAKE_CURRENT_LIST_DIR}/tae-scanner/include)
 
 # Extension from this repo
 duckdb_extension_load(sirius SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR} LOAD_TESTS

@@ -396,12 +396,10 @@ std::unique_ptr<tae_scan_info> tae_gpu_ingestible::load_object(
   if (reads.empty() || selected_rows == 0) { return result; }
 
   for (auto const& read : reads) {
-    if (read.compressed_length > std::numeric_limits<std::size_t>::max() -
-                                   result->compressed_bytes ||
-        read.origin_size > std::numeric_limits<std::size_t>::max() -
-                             result->uncompressed_bytes)
-      throw sirius::embedding::failure(SIRIUS_RESOURCE_EXHAUSTED,
-                                       "TAE split size overflow");
+    if (read.compressed_length >
+          std::numeric_limits<std::size_t>::max() - result->compressed_bytes ||
+        read.origin_size > std::numeric_limits<std::size_t>::max() - result->uncompressed_bytes)
+      throw sirius::embedding::failure(SIRIUS_RESOURCE_EXHAUSTED, "TAE split size overflow");
     result->compressed_bytes += read.compressed_length;
     result->uncompressed_bytes += read.origin_size;
   }

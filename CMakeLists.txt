@@ -734,25 +734,32 @@ endif()
 # topology_discovery into its own static target, and PR #150 split the
 # cudf-coupled code into cucascade_cudf_static — list both here so the export
 # set covers the full dependency chain.
-add_library(sirius_embed STATIC src/embedding/c_api.cpp
-                               src/embedding/runtime.cpp
-                               src/embedding/plan.cpp)
+add_library(
+  sirius_embed STATIC src/embedding/c_api.cpp src/embedding/runtime.cpp
+                      src/embedding/plan.cpp)
 add_library(Sirius::embed ALIAS sirius_embed)
 target_compile_features(sirius_embed PRIVATE cxx_std_20)
-target_include_directories(sirius_embed PUBLIC
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/include>
-  $<INSTALL_INTERFACE:include>)
-target_include_directories(sirius_embed PRIVATE
-  ${CMAKE_CURRENT_SOURCE_DIR}/tae-scanner/include
-  ${SIRIUS_SUBSTRAIT_DIR}/third_party
-  ${SIRIUS_SUBSTRAIT_DIR}/third_party/substrait)
-target_link_libraries(sirius_embed PUBLIC sirius_extension duckdb_static
-                                        dummy_static_extension_loader Threads::Threads)
+target_include_directories(
+  sirius_embed PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/include>
+                      $<INSTALL_INTERFACE:include>)
+target_include_directories(
+  sirius_embed
+  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tae-scanner/include
+          ${SIRIUS_SUBSTRAIT_DIR}/third_party
+          ${SIRIUS_SUBSTRAIT_DIR}/third_party/substrait)
+target_link_libraries(
+  sirius_embed PUBLIC sirius_extension duckdb_static
+                      dummy_static_extension_loader Threads::Threads)
 install(FILES src/include/sirius_c.h DESTINATION "${INSTALL_INCLUDE_DIR}")
 
 install(
-  TARGETS sirius_embed sirius_extension cucascade_static cucascade_cudf_static
-          cucascade_topology_discovery_static telemetry_bridge simpatico
+  TARGETS sirius_embed
+          sirius_extension
+          cucascade_static
+          cucascade_cudf_static
+          cucascade_topology_discovery_static
+          telemetry_bridge
+          simpatico
   EXPORT "${DUCKDB_EXPORT_SET}"
   LIBRARY DESTINATION "${INSTALL_LIB_DIR}"
   ARCHIVE DESTINATION "${INSTALL_LIB_DIR}")
@@ -1028,51 +1035,78 @@ add_executable(sirius_unittest ${TEST_SOURCES})
 
 # Control/credit tests need neither a GPU nor DuckDB initialization. The C
 # consumer below separately proves the real static dependency/link boundary.
-add_executable(sirius_native_control_unittest
+add_executable(
+  sirius_native_control_unittest
   test/cpp/exec/execution_evidence_unittest.cpp
-  test/cpp/embedding/test_native_control.cpp test/cpp/embedding/test_native_input.cpp
-  src/embedding/control.cpp src/embedding/input.cpp)
+  test/cpp/embedding/test_native_control.cpp
+  test/cpp/embedding/test_native_input.cpp
+  src/embedding/control.cpp
+  src/embedding/input.cpp)
 target_compile_features(sirius_native_control_unittest PRIVATE cxx_std_20)
-target_include_directories(sirius_native_control_unittest PRIVATE
-  "${CMAKE_SOURCE_DIR}/third_party/catch" "${CMAKE_CURRENT_SOURCE_DIR}/src/include")
+target_include_directories(
+  sirius_native_control_unittest
+  PRIVATE "${CMAKE_SOURCE_DIR}/third_party/catch"
+          "${CMAKE_CURRENT_SOURCE_DIR}/src/include")
 target_link_libraries(sirius_native_control_unittest PRIVATE Threads::Threads)
 add_executable(sirius_c_smoke test/cpp/embedding/c_smoke.c)
-add_executable(sirius_native_binding_unittest
+add_executable(
+  sirius_native_binding_unittest
   test/cpp/exec/execution_evidence_unittest.cpp
-  test/cpp/embedding/test_native_binding.cpp
-  src/embedding/plan.cpp)
+  test/cpp/embedding/test_native_binding.cpp src/embedding/plan.cpp)
 target_compile_features(sirius_native_binding_unittest PRIVATE cxx_std_20)
-target_include_directories(sirius_native_binding_unittest PRIVATE
-  "${CMAKE_SOURCE_DIR}/third_party/catch" "${CMAKE_CURRENT_SOURCE_DIR}/src/include"
-  "${CMAKE_CURRENT_SOURCE_DIR}/tae-scanner/include"
-  "${SIRIUS_SUBSTRAIT_DIR}/third_party" "${SIRIUS_SUBSTRAIT_DIR}/third_party/substrait")
-target_link_libraries(sirius_native_binding_unittest PRIVATE sirius_extension Threads::Threads)
-add_executable(sirius_native_gpu_unittest
-  test/cpp/exec/execution_evidence_unittest.cpp test/cpp/embedding/test_native_gpu.cpp
-  src/embedding/c_api.cpp)
+target_include_directories(
+  sirius_native_binding_unittest
+  PRIVATE "${CMAKE_SOURCE_DIR}/third_party/catch"
+          "${CMAKE_CURRENT_SOURCE_DIR}/src/include"
+          "${CMAKE_CURRENT_SOURCE_DIR}/tae-scanner/include"
+          "${SIRIUS_SUBSTRAIT_DIR}/third_party"
+          "${SIRIUS_SUBSTRAIT_DIR}/third_party/substrait")
+target_link_libraries(sirius_native_binding_unittest PRIVATE sirius_extension
+                                                             Threads::Threads)
+add_executable(
+  sirius_native_gpu_unittest
+  test/cpp/exec/execution_evidence_unittest.cpp
+  test/cpp/embedding/test_native_gpu.cpp src/embedding/c_api.cpp)
 target_compile_features(sirius_native_gpu_unittest PRIVATE cxx_std_20)
-target_include_directories(sirius_native_gpu_unittest PRIVATE
-  "${CMAKE_SOURCE_DIR}/third_party/catch" "${CMAKE_CURRENT_SOURCE_DIR}/src/include"
-  "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/src/compression/simpatico_codegen/include")
-target_compile_definitions(sirius_native_gpu_unittest PRIVATE SIRIUS_PROJECT_ROOT="${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(sirius_native_gpu_unittest PRIVATE sirius_extension duckdb_static dummy_static_extension_loader Threads::Threads)
-set_target_properties(sirius_c_smoke PROPERTIES C_STANDARD 99 LINKER_LANGUAGE CXX)
+target_include_directories(
+  sirius_native_gpu_unittest
+  PRIVATE
+    "${CMAKE_SOURCE_DIR}/third_party/catch"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/include" "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/compression/simpatico_codegen/include")
+target_compile_definitions(
+  sirius_native_gpu_unittest
+  PRIVATE SIRIUS_PROJECT_ROOT="${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(
+  sirius_native_gpu_unittest
+  PRIVATE sirius_extension duckdb_static dummy_static_extension_loader
+          Threads::Threads)
+set_target_properties(sirius_c_smoke PROPERTIES C_STANDARD 99 LINKER_LANGUAGE
+                                                              CXX)
 target_link_libraries(sirius_c_smoke PRIVATE Sirius::embed)
-set_property(TARGET sirius_c_smoke APPEND PROPERTY LINK_DEPENDS
-  "${CMAKE_CURRENT_SOURCE_DIR}/scripts/export_embed_link.py"
-  "${CMAKE_CURRENT_SOURCE_DIR}/src/include/sirius_c.h")
-add_custom_command(TARGET sirius_c_smoke POST_BUILD
-  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/export_embed_link.py"
-    --ninja "${CMAKE_MAKE_PROGRAM}" --build "${CMAKE_BINARY_DIR}"
-    --consumer "$<TARGET_FILE:sirius_c_smoke>"
-    --header "${CMAKE_CURRENT_SOURCE_DIR}/src/include/sirius_c.h"
-    --output "${CMAKE_CURRENT_BINARY_DIR}/embedding-sdk"
+set_property(
+  TARGET sirius_c_smoke
+  APPEND
+  PROPERTY LINK_DEPENDS
+           "${CMAKE_CURRENT_SOURCE_DIR}/scripts/export_embed_link.py"
+           "${CMAKE_CURRENT_SOURCE_DIR}/src/include/sirius_c.h")
+add_custom_command(
+  TARGET sirius_c_smoke
+  POST_BUILD
+  COMMAND
+    "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/export_embed_link.py" --ninja
+    "${CMAKE_MAKE_PROGRAM}" --build "${CMAKE_BINARY_DIR}" --consumer
+    "$<TARGET_FILE:sirius_c_smoke>" --header
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/include/sirius_c.h" --output
+    "${CMAKE_CURRENT_BINARY_DIR}/embedding-sdk"
   VERBATIM)
 
 # Only the TAE metadata regression includes scanner bind-data headers directly.
 set_source_files_properties(
   test/cpp/integration/test_gpu_execution_tae_scan.cpp
-  PROPERTIES INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/tae-scanner/include")
+  PROPERTIES INCLUDE_DIRECTORIES
+             "${CMAKE_CURRENT_SOURCE_DIR}/tae-scanner/include")
 add_executable(
   sirius_execution_evidence_unittest
   test/cpp/exec/execution_evidence_unittest.cpp
