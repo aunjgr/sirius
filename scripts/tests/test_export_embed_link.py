@@ -85,7 +85,7 @@ class ExportTest(unittest.TestCase):
             ]
             for path in paths:
                 path.write_bytes(path.name.encode())
-            loaded = f"libgpu.so => {paths[4]} (0x1)\nlibcuda.so.1 => /host/libcuda.so.1 (0x2)\nlibc.so.6 => /host/libc.so.6 (0x3)\n"
+            loaded = f"libgpu.so => {paths[4]} (0x1)\nlibcuda.so.1 => /host/libcuda.so.1 (0x2)\nlibc.so.6 => /host/libc.so.6 (0x3)\nlibmvec.so.1 => /host/libmvec.so.1 (0x4)\n"
             with patch.object(
                 sdk.subprocess,
                 "run",

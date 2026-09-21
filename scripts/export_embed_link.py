@@ -113,7 +113,7 @@ def artifact_hashes(flags, consumer, header, compiler):
         text=True,
     ).stdout
     host = re.compile(
-        r"^(?:lib(?:cuda|nvidia-ml)\.so(?:\..*)?|lib(?:c|m|dl|rt|pthread|resolv|util)\.so(?:\..*)?|ld-linux.*)$"
+        r"^(?:lib(?:cuda|nvidia-ml)\.so(?:\..*)?|lib(?:c|m|mvec|dl|rt|pthread|resolv|util)\.so(?:\..*)?|ld-linux.*)$"
     )
     for line in dependencies.splitlines():
         if "not found" in line:
