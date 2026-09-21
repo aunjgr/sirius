@@ -33,6 +33,7 @@
 #include "duckdb/storage/storage_manager.hpp"
 #include "duckdb/transaction/duck_transaction.hpp"
 #include "duckdb/transaction/local_storage.hpp"
+#include "embedding/plan_bindings.hpp"
 #include "exec/stream_bind_catalog.hpp"
 #include "exec/stream_plan_bindings.hpp"
 #include "expression/ast/from_duckdb.hpp"
@@ -621,6 +622,8 @@ sirius_physical_plan_generator::create_plan(duckdb::LogicalGet& op)
     "read_parquet",
     "sirius_read_parquet",
     "tae_scan",
+    sirius::embedding::embedded_mo_function,
+    sirius::embedding::embedded_tae_function,
     "iceberg_scan",
     sirius::exec::kStreamSourceFunctionName};
   if (kSupportedScanFunctions.find(op.function.name) == kSupportedScanFunctions.end()) {
