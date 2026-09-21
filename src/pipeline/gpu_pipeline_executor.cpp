@@ -133,6 +133,7 @@ bool gpu_pipeline_executor::try_admit(gpu_pipeline_task& task)
       reservation = _memory_space->make_reservation_or_null(floor);
     }
     if (reservation) {
+      if (handler) handler->tae_gpu_reservation_admitted(reservation->size());
       local->set_reservation(std::move(reservation), info);
       return true;
     }
@@ -144,6 +145,7 @@ bool gpu_pipeline_executor::try_admit(gpu_pipeline_task& task)
       if (_admission_downgrade.valid()) { _admission_downgrade.get(); }
       _admission_downgrade = _downgrade_executor->request_free_memory(floor);
     }
+    if (handler) handler->tae_gpu_admission_waited();
     return false;
   } catch (...) {
     if (handler) { handler->report_error(std::current_exception()); }
@@ -383,6 +385,18 @@ void gpu_pipeline_executor::manager_loop()
        consumers  = std::move(output_consumers),
        completion = std::move(completion),
        pipeline]() mutable {
+        struct task_observer {
+          std::shared_ptr<completion_handler> const& completion;
+          explicit task_observer(std::shared_ptr<completion_handler> const& value)
+            : completion(value)
+          {
+            if (completion) completion->gpu_task_started();
+          }
+          ~task_observer()
+          {
+            if (completion) completion->gpu_task_completed();
+          }
+        } observed(completion);
         try {
           task->execute(exc_stream);
           _tasks_executed.fetch_add(1, std::memory_order_relaxed);
@@ -573,16 +587,12 @@ gpu_pipeline_task* gpu_pipeline_executor::cast_to_gpu_pipeline_task(sirius::para
 }
 
 void gpu_pipeline_executor::set_task_creator(sirius::creator::task_creator* task_creator)
-{
-  _task_creator = task_creator;
-}
+{ _task_creator = task_creator; }
 
 bool gpu_pipeline_executor::is_task_queue_empty() const noexcept { return _task_queue.empty(); }
 
 executor_metrics gpu_pipeline_executor::get_metrics() const noexcept
-{
-  return {_tasks_executed.load(std::memory_order_relaxed)};
-}
+{ return {_tasks_executed.load(std::memory_order_relaxed)}; }
 
 }  // namespace pipeline
 }  // namespace sirius

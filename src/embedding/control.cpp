@@ -25,9 +25,7 @@ sirius_error error(sirius_status code, const char* message = "") noexcept
   return result;
 }
 bool quiesced(query_state const& q)
-{
-  return q.phase == query_phase::QUIESCED || q.phase == query_phase::CLOSED;
-}
+{ return q.phase == query_phase::QUIESCED || q.phase == query_phase::CLOSED; }
 bool terminal(query_state const& q) { return quiesced(q) || q.phase == query_phase::UNAVAILABLE; }
 }  // namespace
 void assign_error(sirius_error& out, sirius_status code, const char* message) noexcept
@@ -91,8 +89,9 @@ std::shared_ptr<query_state> engine_control::create(std::string_view plan,
   // Admission precedes the bounded copy; rejected concurrent callers do not
   // each allocate a maximum-size plan outside the query-count limit.
   auto q            = std::make_shared<query_state>();
+  q->stats          = std::make_shared<execution_stats>();
   q->inputs         = std::make_shared<input_registry>();
-  q->results        = std::make_shared<native_result>();
+  q->results        = std::make_shared<native_result>(q->stats);
   q->plan           = plan;
   q->metadata_bytes = metadata_charge;
   q->metadata_leases.push_back(std::move(plan_credit));
@@ -149,7 +148,7 @@ void engine_control::bind_query(std::shared_ptr<query_state> const& q,
   }
   auto canonical = sizeof(owned_query_contract) + contract.query_id_bytes +
                    contract.output_column_count * sizeof(owned_column) + output_names;
-  auto charged = canonical * 4;
+  auto charged   = canonical * 4;
   buffer_budget::lease credit;
   auto credit_status = metadata_budget_->acquire(charged, {}, clock::now(), credit);
   if (credit_status != SIRIUS_OK)
@@ -307,6 +306,7 @@ void engine_control::register_read(std::shared_ptr<query_state> const& q,
   q->metadata_leases.push_back(std::move(credit));
   if (first_tae) q->metadata_leases.push_back(std::move(tae_runtime_credit));
   q->bindings.push_back(std::move(owned));
+  q->stats->add_source(binding.source_kind);
 }
 sirius_error engine_control::prepare(std::shared_ptr<query_state> const& q,
                                      std::chrono::milliseconds duration)
@@ -352,8 +352,8 @@ std::shared_ptr<native_input> engine_control::register_input(std::shared_ptr<que
   q->inputs->reads.reserve(q->inputs->reads.size() + 1);
   std::vector<sirius_input_column> schema;
   if (count) schema.assign(columns, columns + count);
-  auto read =
-    std::make_shared<native_input>(id, std::move(schema), q->stop.get_token(), q->deadline);
+  auto read = std::make_shared<native_input>(
+    id, std::move(schema), q->stop.get_token(), q->deadline, input_window, 128, q->stats);
   q->inputs->reads.push_back(read);
   q->metadata_bytes += metadata_bytes;
   q->metadata_leases.push_back(std::move(metadata_credit));
@@ -387,6 +387,7 @@ void engine_control::cancel(std::shared_ptr<query_state> const& q)
       std::erase(pending_, q);
       q->result = error(SIRIUS_CANCELLED, "native query cancelled before preparation");
       q->phase  = query_phase::QUIESCED;
+      q->stats->terminal(q->result.code, false);
     }
   }
   changed_.notify_all();
@@ -465,6 +466,9 @@ sirius_engine_stats engine_control::inspect()
           live_,
           pending_.size()};
 }
+sirius_query_execution_stats engine_control::inspect_execution(
+  std::shared_ptr<query_state> const& q) const
+{ return q->stats->inspect(); }
 void engine_control::process(engine_backend& backend,
                              std::shared_ptr<query_state> const& q) noexcept
 {
@@ -532,6 +536,7 @@ void engine_control::process(engine_backend& backend,
       unavailable_ = true;
       accepting_   = false;
     }
+    q->stats->terminal(result.code, result.code == SIRIUS_GPU_UNAVAILABLE);
   }
   if (result.code == SIRIUS_GPU_UNAVAILABLE) stop();
   changed_.notify_all();

@@ -149,9 +149,7 @@ void sirius_engine::cancel_tasks()
 }
 
 bool sirius_engine::has_result_collector()
-{
-  return sirius_physical_plan->type == op::SiriusPhysicalOperatorType::RESULT_COLLECTOR;
-}
+{ return sirius_physical_plan->type == op::SiriusPhysicalOperatorType::RESULT_COLLECTOR; }
 
 duckdb::unique_ptr<duckdb::QueryResult> sirius_engine::get_result()
 {
@@ -215,7 +213,7 @@ void sirius_engine::execute(std::stop_token stop, std::chrono::steady_clock::tim
   // global state, so no cross-query subsystem holds a "current query" handler.
   {
     std::lock_guard lock(completion_mutex_);
-    completion_handler_ = std::make_shared<pipeline::completion_handler>();
+    completion_handler_ = std::make_shared<pipeline::completion_handler>(execution_stats_);
   }
   auto future = completion_handler_->get_awaitable();
 
