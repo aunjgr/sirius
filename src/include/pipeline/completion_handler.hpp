@@ -16,10 +16,17 @@
 
 #pragma once
 
+#include "embedding/execution_stats.hpp"
+
 #include <atomic>
+#include <cstddef>
 #include <exception>
 #include <future>
+#include <memory>
 #include <mutex>
+#include <stdexcept>
+#include <string_view>
+#include <utility>
 
 namespace sirius::pipeline {
 
@@ -32,7 +39,10 @@ namespace sirius::pipeline {
  */
 class completion_handler {
  public:
-  completion_handler()  = default;
+  explicit completion_handler(std::shared_ptr<embedding::execution_stats> stats = {})
+    : execution_stats_(std::move(stats))
+  {
+  }
   ~completion_handler() = default;
 
   // Non-copyable and non-movable
@@ -140,7 +150,25 @@ class completion_handler {
     return _fatal_error;
   }
 
+  void gpu_task_started() const noexcept
+  {
+    if (execution_stats_) execution_stats_->gpu_task_started();
+  }
+  void gpu_task_completed() const noexcept
+  {
+    if (execution_stats_) execution_stats_->gpu_task_completed();
+  }
+  void tae_gpu_admission_waited() const noexcept
+  {
+    if (execution_stats_) execution_stats_->tae_gpu_admission_wait();
+  }
+  void tae_gpu_reservation_admitted(std::size_t bytes) const noexcept
+  {
+    if (execution_stats_) execution_stats_->tae_gpu_reservation(bytes);
+  }
+
  private:
+  std::shared_ptr<embedding::execution_stats> execution_stats_;
   std::promise<void> _promise;
   std::atomic<bool> _completed{false};
   std::atomic<bool> _has_error{false};

@@ -215,7 +215,7 @@ void sirius_engine::execute(std::stop_token stop, std::chrono::steady_clock::tim
   // global state, so no cross-query subsystem holds a "current query" handler.
   {
     std::lock_guard lock(completion_mutex_);
-    completion_handler_ = std::make_shared<pipeline::completion_handler>();
+    completion_handler_ = std::make_shared<pipeline::completion_handler>(execution_stats_);
   }
   auto future = completion_handler_->get_awaitable();
 

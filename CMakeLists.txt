@@ -266,6 +266,7 @@ endif()
 # cmake-format: off
 set(EXTENSION_SOURCES
     src/embedding/control.cpp
+    src/embedding/execution_stats.cpp
     src/embedding/input.cpp
     src/embedding/tae_demand.cpp
     src/embedding/result.cpp
@@ -1067,11 +1068,13 @@ add_executable(
   sirius_native_control_unittest
   test/cpp/exec/execution_evidence_unittest.cpp
   test/cpp/embedding/test_native_control.cpp
+  test/cpp/embedding/test_native_execution_stats.cpp
   test/cpp/exec/test_multi_index_priority_queue.cpp
   test/cpp/embedding/test_native_input.cpp
   test/cpp/embedding/test_tae_demand.cpp
   test/cpp/embedding/test_native_result.cpp
   src/embedding/control.cpp
+  src/embedding/execution_stats.cpp
   src/embedding/input.cpp
   src/embedding/tae_demand.cpp
   src/embedding/result.cpp)
