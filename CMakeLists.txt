@@ -268,6 +268,9 @@ set(EXTENSION_SOURCES
     src/embedding/control.cpp
     src/embedding/input.cpp
     src/embedding/tae_demand.cpp
+    src/embedding/result.cpp
+    src/embedding/result_codec.cpp
+    src/embedding/result_gpu.cpp
     src/embedding/native_gpu.cpp
     src/embedding/plan_bindings.cpp
     src/compression/compressed_representation.cpp
@@ -1067,9 +1070,11 @@ add_executable(
   test/cpp/exec/test_multi_index_priority_queue.cpp
   test/cpp/embedding/test_native_input.cpp
   test/cpp/embedding/test_tae_demand.cpp
+  test/cpp/embedding/test_native_result.cpp
   src/embedding/control.cpp
   src/embedding/input.cpp
-  src/embedding/tae_demand.cpp)
+  src/embedding/tae_demand.cpp
+  src/embedding/result.cpp)
 target_compile_features(sirius_native_control_unittest PRIVATE cxx_std_20)
 target_include_directories(
   sirius_native_control_unittest
@@ -1077,6 +1082,16 @@ target_include_directories(
           "${CMAKE_CURRENT_SOURCE_DIR}/src/include")
 target_link_libraries(sirius_native_control_unittest PRIVATE Threads::Threads)
 add_executable(sirius_c_smoke test/cpp/embedding/c_smoke.c)
+add_executable(sirius_native_result_integration
+               test/cpp/embedding/native_result_integration.cpp)
+target_compile_features(sirius_native_result_integration PRIVATE cxx_std_20)
+target_include_directories(
+  sirius_native_result_integration
+  PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/include"
+          "${SIRIUS_SUBSTRAIT_DIR}/third_party"
+          "${SIRIUS_SUBSTRAIT_DIR}/third_party/substrait")
+target_link_libraries(sirius_native_result_integration PRIVATE Sirius::embed
+                                                               Threads::Threads)
 add_executable(
   sirius_native_binding_unittest
   test/cpp/exec/execution_evidence_unittest.cpp
@@ -1096,6 +1111,7 @@ add_executable(
   test/cpp/exec/execution_evidence_unittest.cpp
   test/cpp/embedding/test_native_gpu.cpp
   test/cpp/embedding/test_native_admission.cpp
+  test/cpp/embedding/test_native_result_codec.cpp
   test/cpp/embedding/test_tae_gpu.cpp
   src/embedding/c_api.cpp)
 target_compile_features(sirius_native_gpu_unittest PRIVATE cxx_std_20)
