@@ -33,7 +33,9 @@ void execution_stats::add_source(uint32_t source_kind) noexcept
   source_mask_.fetch_or(bit, std::memory_order_relaxed);
 }
 bool execution_stats::has_source(uint32_t source) const noexcept
-{ return (source_mask_.load(std::memory_order_relaxed) & source) != 0; }
+{
+  return (source_mask_.load(std::memory_order_relaxed) & source) != 0;
+}
 
 void execution_stats::terminal(sirius_status status, bool fatal) noexcept
 {
@@ -47,9 +49,13 @@ void execution_stats::terminal(sirius_status status, bool fatal) noexcept
 }
 
 void execution_stats::gpu_task_started() noexcept
-{ gpu_tasks_started_.fetch_add(1, std::memory_order_relaxed); }
+{
+  gpu_tasks_started_.fetch_add(1, std::memory_order_relaxed);
+}
 void execution_stats::gpu_task_completed() noexcept
-{ gpu_tasks_completed_.fetch_add(1, std::memory_order_relaxed); }
+{
+  gpu_tasks_completed_.fetch_add(1, std::memory_order_relaxed);
+}
 
 void execution_stats::mo_input_retain(std::size_t charged_bytes) noexcept
 {
@@ -63,9 +69,13 @@ void execution_stats::mo_input_release(std::size_t charged_bytes) noexcept
   assert(previous >= charged_bytes);
 }
 void execution_stats::mo_input_blocked() noexcept
-{ mo_input_blocked_.fetch_add(1, std::memory_order_relaxed); }
+{
+  mo_input_blocked_.fetch_add(1, std::memory_order_relaxed);
+}
 void execution_stats::mo_input_unit() noexcept
-{ mo_input_units_.fetch_add(1, std::memory_order_relaxed); }
+{
+  mo_input_units_.fetch_add(1, std::memory_order_relaxed);
+}
 
 void execution_stats::tae_configure(std::size_t limit, std::size_t slice_bytes) noexcept
 {
@@ -90,9 +100,13 @@ void execution_stats::tae_complete() noexcept
   assert(previous != 0);
 }
 void execution_stats::tae_cache(std::size_t charged_bytes) noexcept
-{ peak(tae_peak_cache_, charged_bytes); }
+{
+  peak(tae_peak_cache_, charged_bytes);
+}
 void execution_stats::tae_staging(std::size_t charged_bytes) noexcept
-{ peak(tae_peak_staging_, charged_bytes); }
+{
+  peak(tae_peak_staging_, charged_bytes);
+}
 void execution_stats::tae_gpu_admission_wait() noexcept
 {
   if (!has_source(SIRIUS_QUERY_SOURCE_TAE)) return;
@@ -104,7 +118,9 @@ void execution_stats::tae_gpu_reservation(std::size_t admitted_bytes) noexcept
   peak(tae_peak_gpu_reservation_, admitted_bytes);
 }
 void execution_stats::tae_payload(std::size_t bytes) noexcept
-{ tae_payload_bytes_.fetch_add(bytes, std::memory_order_relaxed); }
+{
+  tae_payload_bytes_.fetch_add(bytes, std::memory_order_relaxed);
+}
 
 void execution_stats::result_retain(std::size_t charged_bytes) noexcept
 {
@@ -123,7 +139,9 @@ void execution_stats::result_publish(uint64_t rows, std::size_t payload_bytes) n
   result_payload_bytes_.fetch_add(payload_bytes, std::memory_order_relaxed);
 }
 void execution_stats::result_blocked() noexcept
-{ result_blocked_.fetch_add(1, std::memory_order_relaxed); }
+{
+  result_blocked_.fetch_add(1, std::memory_order_relaxed);
+}
 void execution_stats::result_parked(bool value) noexcept
 {
   if (value) {

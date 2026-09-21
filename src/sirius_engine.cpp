@@ -149,7 +149,9 @@ void sirius_engine::cancel_tasks()
 }
 
 bool sirius_engine::has_result_collector()
-{ return sirius_physical_plan->type == op::SiriusPhysicalOperatorType::RESULT_COLLECTOR; }
+{
+  return sirius_physical_plan->type == op::SiriusPhysicalOperatorType::RESULT_COLLECTOR;
+}
 
 duckdb::unique_ptr<duckdb::QueryResult> sirius_engine::get_result()
 {

@@ -80,13 +80,17 @@ class engine_backend {
                                                        input_registry& inputs,
                                                        std::stop_token stop,
                                                        clock::time_point deadline)
-  { return prepare(plan, stop, deadline); }
+  {
+    return prepare(plan, stop, deadline);
+  }
   virtual std::unique_ptr<query_driver> prepare_bound(std::string_view plan,
                                                       query_state const&,
                                                       input_registry& inputs,
                                                       std::stop_token stop,
                                                       clock::time_point deadline)
-  { return prepare_inputs(plan, inputs, stop, deadline); }
+  {
+    return prepare_inputs(plan, inputs, stop, deadline);
+  }
   virtual std::unique_ptr<query_driver> prepare(std::string_view plan,
                                                 std::stop_token stop,
                                                 clock::time_point deadline) = 0;

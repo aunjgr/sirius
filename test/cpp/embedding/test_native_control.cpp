@@ -84,7 +84,9 @@ class test_driver final : public query_driver {
 class test_backend final : public engine_backend {
  public:
   explicit test_backend(std::shared_ptr<recording> r) : r_(std::move(r))
-  { r_->thread = std::this_thread::get_id(); }
+  {
+    r_->thread = std::this_thread::get_id();
+  }
   std::unique_ptr<query_driver> prepare(std::string_view plan,
                                         std::stop_token,
                                         clock::time_point) override

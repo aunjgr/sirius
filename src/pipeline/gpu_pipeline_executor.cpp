@@ -587,12 +587,16 @@ gpu_pipeline_task* gpu_pipeline_executor::cast_to_gpu_pipeline_task(sirius::para
 }
 
 void gpu_pipeline_executor::set_task_creator(sirius::creator::task_creator* task_creator)
-{ _task_creator = task_creator; }
+{
+  _task_creator = task_creator;
+}
 
 bool gpu_pipeline_executor::is_task_queue_empty() const noexcept { return _task_queue.empty(); }
 
 executor_metrics gpu_pipeline_executor::get_metrics() const noexcept
-{ return {_tasks_executed.load(std::memory_order_relaxed)}; }
+{
+  return {_tasks_executed.load(std::memory_order_relaxed)};
+}
 
 }  // namespace pipeline
 }  // namespace sirius

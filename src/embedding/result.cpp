@@ -146,7 +146,9 @@ void native_result::cancel()
   complete(error);
 }
 void native_result::subscribe(std::shared_ptr<capacity_waker> wake)
-{ budget_.set_waker(std::move(wake)); }
+{
+  budget_.set_waker(std::move(wake));
+}
 void native_result::parked(bool value)
 {
   std::lock_guard lock(mutex_);

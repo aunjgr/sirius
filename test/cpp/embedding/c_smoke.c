@@ -32,7 +32,9 @@ static int pb_varint(pb_buffer* out, uint64_t value)
 }
 
 static int pb_uint(pb_buffer* out, uint32_t field, uint64_t value)
-{ return pb_varint(out, ((uint64_t)field << 3) | 0u) && pb_varint(out, value); }
+{
+  return pb_varint(out, ((uint64_t)field << 3) | 0u) && pb_varint(out, value);
+}
 
 static int pb_bytes(pb_buffer* out, uint32_t field, const void* bytes, size_t count)
 {
@@ -45,7 +47,9 @@ static int pb_bytes(pb_buffer* out, uint32_t field, const void* bytes, size_t co
 }
 
 static int pb_text(pb_buffer* out, uint32_t field, const char* text)
-{ return pb_bytes(out, field, text, strlen(text)); }
+{
+  return pb_bytes(out, field, text, strlen(text));
+}
 
 /* One Substrait 0.78 root reading registered binding 1 as one required BIGINT column. */
 static int make_bound_plan(pb_buffer* plan)

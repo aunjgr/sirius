@@ -23,12 +23,16 @@ struct stats_storage final : input_storage {
   explicit stats_storage(std::size_t size) : bytes(size) {}
   std::size_t size() const override { return bytes.size(); }
   void visit(std::function<void(std::size_t, std::span<std::byte>)> const& fn) override
-  { fn(0, bytes); }
+  {
+    fn(0, bytes);
+  }
 };
 struct stats_pool final : input_pool {
   std::size_t rounded(std::size_t bytes) const override { return (bytes + 7) / 8 * 8; }
   std::unique_ptr<input_storage> allocate(std::size_t bytes) override
-  { return std::make_unique<stats_storage>(rounded(bytes)); }
+  {
+    return std::make_unique<stats_storage>(rounded(bytes));
+  }
 };
 struct charged_pool final : input_pool {
   std::size_t rounded(std::size_t bytes) const override { return bytes; }
@@ -60,7 +64,9 @@ class stats_backend final : public engine_backend {
   std::unique_ptr<query_driver> prepare(std::string_view,
                                         std::stop_token,
                                         clock::time_point) override
-  { return std::make_unique<stats_driver>(); }
+  {
+    return std::make_unique<stats_driver>();
+  }
 };
 }  // namespace
 

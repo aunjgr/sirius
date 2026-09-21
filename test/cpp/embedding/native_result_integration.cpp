@@ -369,9 +369,9 @@ int main(int argc, char** argv)
                                   0,
                                   streams,
                                   0};
-    auto rejected_path         = (std::filesystem::path(__FILE__).parent_path().parent_path() /
-                                  "config/data/embedding-multigpu.yaml")
-                                   .string();
+    auto rejected_path = (std::filesystem::path(__FILE__).parent_path().parent_path() /
+                          "config/data/embedding-multigpu.yaml")
+                           .string();
     auto rejected              = options;
     rejected.config_path       = rejected_path.data();
     rejected.config_path_bytes = static_cast<uint32_t>(rejected_path.size());

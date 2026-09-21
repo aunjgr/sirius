@@ -15,7 +15,9 @@ void require(bool value, const char* message)
   if (!value) throw failure(SIRIUS_INVALID_ARGUMENT, message);
 }
 void range(std::size_t offset, std::size_t size, std::size_t capacity)
-{ require(offset <= capacity && size <= capacity - offset, "native input range outside lease"); }
+{
+  require(offset <= capacity && size <= capacity - offset, "native input range outside lease");
+}
 template <class T>
 T load(input_storage const& data, std::size_t offset)
 {

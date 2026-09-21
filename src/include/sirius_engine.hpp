@@ -94,7 +94,9 @@ class sirius_engine {
   void execute();
   void execute(std::stop_token stop, std::chrono::steady_clock::time_point deadline);
   void set_execution_stats(std::shared_ptr<embedding::execution_stats> stats)
-  { execution_stats_ = std::move(stats); }
+  {
+    execution_stats_ = std::move(stats);
+  }
   void report_execution_error(std::exception_ptr error);
   //! Reset the sirius engine
   void reset();

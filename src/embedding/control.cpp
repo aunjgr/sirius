@@ -25,7 +25,9 @@ sirius_error error(sirius_status code, const char* message = "") noexcept
   return result;
 }
 bool quiesced(query_state const& q)
-{ return q.phase == query_phase::QUIESCED || q.phase == query_phase::CLOSED; }
+{
+  return q.phase == query_phase::QUIESCED || q.phase == query_phase::CLOSED;
+}
 bool terminal(query_state const& q) { return quiesced(q) || q.phase == query_phase::UNAVAILABLE; }
 }  // namespace
 void assign_error(sirius_error& out, sirius_status code, const char* message) noexcept
@@ -148,7 +150,7 @@ void engine_control::bind_query(std::shared_ptr<query_state> const& q,
   }
   auto canonical = sizeof(owned_query_contract) + contract.query_id_bytes +
                    contract.output_column_count * sizeof(owned_column) + output_names;
-  auto charged   = canonical * 4;
+  auto charged = canonical * 4;
   buffer_budget::lease credit;
   auto credit_status = metadata_budget_->acquire(charged, {}, clock::now(), credit);
   if (credit_status != SIRIUS_OK)
@@ -468,7 +470,9 @@ sirius_engine_stats engine_control::inspect()
 }
 sirius_query_execution_stats engine_control::inspect_execution(
   std::shared_ptr<query_state> const& q) const
-{ return q->stats->inspect(); }
+{
+  return q->stats->inspect();
+}
 void engine_control::process(engine_backend& backend,
                              std::shared_ptr<query_state> const& q) noexcept
 {

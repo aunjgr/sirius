@@ -671,7 +671,9 @@ std::unique_ptr<tae_scan_info> tae_gpu_ingestible::plan_live_split(
 }
 
 std::unique_ptr<batch_coalescer> tae_gpu_ingestible::create_batch_coalescer() const
-{ return std::make_unique<passthrough_coalescer>(); }
+{
+  return std::make_unique<passthrough_coalescer>();
+}
 
 bool tae_gpu_ingestible::has_processed_all_metadata() const
 {
@@ -839,9 +841,9 @@ std::unique_ptr<tae_scan_info> tae_gpu_ingestible::load_object(
     chunk.width         = read.width;
     chunk.scale         = read.scale;
     chunk.extent        = tae::Extent{read.algorithm,
-                                      static_cast<std::uint32_t>(read.offset),
-                                      read.compressed_length,
-                                      read.origin_size};
+                               static_cast<std::uint32_t>(read.offset),
+                               read.compressed_length,
+                               read.origin_size};
     chunk.null_cnt      = read.null_count;
     chunk.row_count     = read.row_count;
     chunk.pinned_offset = host_offset;
@@ -981,6 +983,8 @@ std::vector<std::size_t> tae_gpu_ingestible::materialized_column_order() const
 }
 
 std::shared_ptr<tae_gpu_ingestible> make_ingestible(std::unique_ptr<tae_ingestible_table_info> info)
-{ return std::make_shared<tae_gpu_ingestible>(std::move(info)); }
+{
+  return std::make_shared<tae_gpu_ingestible>(std::move(info));
+}
 
 }  // namespace sirius::op::scan

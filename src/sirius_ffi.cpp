@@ -193,11 +193,17 @@ Context::Context(const std::string& config_path) : impl_(std::make_unique<Impl>(
 // the embedded DuckDB and the initialized engine.
 Context::~Context() = default;
 std::size_t Context::embedded_metadata_capacity_bytes() const noexcept
-{ return impl_->embedded_metadata_capacity; }
+{
+  return impl_->embedded_metadata_capacity;
+}
 std::size_t Context::embedded_tae_host_staging_bytes() const noexcept
-{ return impl_->embedded_tae_host_staging; }
+{
+  return impl_->embedded_tae_host_staging;
+}
 bool Context::embedded_runtime_available() const noexcept
-{ return impl_->context->get_runtime_health() == duckdb::SiriusContext::runtime_health::OK; }
+{
+  return impl_->context->get_runtime_health() == duckdb::SiriusContext::runtime_health::OK;
+}
 
 struct EmbeddedPrepared::Impl {
   Context::Impl* context{};
@@ -291,7 +297,9 @@ duckdb::LogicalType embedded_type(sirius::embedding::owned_column const& column)
 }
 
 std::string embedded_view_name(uint64_t generation, uint64_t binding_id)
-{ return "sirius_embedded_g" + std::to_string(generation) + "_b" + std::to_string(binding_id); }
+{
+  return "sirius_embedded_g" + std::to_string(generation) + "_b" + std::to_string(binding_id);
+}
 
 std::string rewrite_embedded_reads(std::string const& bytes, uint64_t generation)
 {
@@ -343,9 +351,9 @@ std::unique_ptr<EmbeddedPrepared> Context::prepare_embedded(const std::string& b
                                  : nullptr;
   auto tae_demand      = has_tae
                            ? embedding::make_tae_demand_controller(impl_->embedded_gpu_streams,
-                                                                   tae_host_budget,
-                                                                   impl_->embedded_tae_host_staging,
-                                                                   query.stats)
+                                                              tae_host_budget,
+                                                              impl_->embedded_tae_host_staging,
+                                                              query.stats)
                            : nullptr;
   impl_->conn->BeginTransaction();
   std::vector<std::string> views;
@@ -409,8 +417,8 @@ std::unique_ptr<EmbeddedPrepared> Context::prepare_embedded(const std::string& b
         throw embedding::failure(SIRIUS_INVALID_ARGUMENT,
                                  "prepared output schema does not match query contract");
     }
-    auto physical     = sirius::planner::sirius_physical_plan_generator(*impl_->conn->context)
-                          .create_plan(std::move(lowered.plan));
+    auto physical = sirius::planner::sirius_physical_plan_generator(*impl_->conn->context)
+                      .create_plan(std::move(lowered.plan));
     owner             = std::make_unique<EmbeddedPrepared::Impl>();
     owner->context    = impl_.get();
     owner->tae_demand = std::move(tae_demand);
@@ -550,7 +558,9 @@ void Context::execute_substrait(const std::string& plan, std::uintptr_t out_stre
 std::unique_ptr<Context> make_context() { return std::make_unique<Context>(); }
 
 std::unique_ptr<Context> make_context_from_config(const std::string& config_path)
-{ return std::make_unique<Context>(config_path); }
+{
+  return std::make_unique<Context>(config_path);
+}
 
 // ---------------------------------------------------------------------------
 // Fragment
@@ -605,7 +615,9 @@ struct Fragment::Impl {
   [[nodiscard]] bool is_result() const { return outputs.empty(); }
 
   sirius::exec::stream_session& session()
-  { return fragment ? fragment->session() : result_session; }
+  {
+    return fragment ? fragment->session() : result_session;
+  }
 
   void require_not_built(const char* what) const
   {
@@ -660,9 +672,9 @@ struct Fragment::Impl {
     for (const auto& [id, _] : inputs) {
       const auto view_name = stream_view_name_of(id);
       const auto sql       = "CREATE OR REPLACE VIEW main." + view_name + " AS SELECT * FROM " +
-                             std::string(sirius::exec::kStreamSourceFunctionName) + "(" +
-                             std::to_string(id) + ")";
-      auto res             = ctx.conn->Query(sql);
+                       std::string(sirius::exec::kStreamSourceFunctionName) + "(" +
+                       std::to_string(id) + ")";
+      auto res = ctx.conn->Query(sql);
       if (res->HasError()) { res->ThrowError(); }
     }
   }
@@ -800,8 +812,8 @@ void Fragment::build(const std::string& substrait_plan)
       sirius::exec::fragment_spec spec;
       spec.plan_source = [plan = substrait_plan, conn = impl_->ctx.conn.get()](
                            duckdb::ClientContext&) { return lower_substrait(*conn, plan).plan; };
-      spec.inputs      = std::move(resolved);
-      spec.outputs     = impl_->outputs;
+      spec.inputs  = std::move(resolved);
+      spec.outputs = impl_->outputs;
 
       if (impl_->broadcast_outputs && impl_->outputs.size() > 1) {
         sirius::op::partition_spec broadcast;
@@ -982,6 +994,8 @@ std::unique_ptr<Fragment> make_fragment(Context& context)
 }
 
 std::unique_ptr<std::string> stream_view_name(std::uint64_t stream_id)
-{ return std::make_unique<std::string>(stream_view_name_of(stream_id)); }
+{
+  return std::make_unique<std::string>(stream_view_name_of(stream_id));
+}
 
 }  // namespace sirius::ffi
