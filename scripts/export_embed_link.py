@@ -208,7 +208,6 @@ def main():
     parser.add_argument("--consumer", type=Path, required=True)
     parser.add_argument("--header", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--gpu-toolchain-config", type=Path)
     args = parser.parse_args()
     build = args.build.resolve()
     commands = subprocess.run(
@@ -242,18 +241,10 @@ def main():
     manifest["artifact_sha256"][str((args.output / "sirius_c.h").resolve())] = sha256(
         args.output / "sirius_c.h"
     )
-    if args.gpu_toolchain_config:
-        from export_gpu_toolchain import export_toolchain
-
-        toolchain = export_toolchain(
-            args.gpu_toolchain_config, c_compiler_path, compiler
-        )
-        toolchain_path = (args.output / "toolchain.json").resolve()
-        toolchain_path.write_text(json.dumps(toolchain, indent=2) + "\n")
-        manifest["gpu_toolchain_manifest"] = str(toolchain_path)
-        manifest["artifact_sha256"][str(toolchain_path)] = sha256(toolchain_path)
-        manifest["artifact_sha256"].update(toolchain["artifact_sha256"])
     (args.output / "link.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    # Reusing a build tree must not leave the retired GPU-provider manifest
+    # beside a newly exported SDK that no longer records or validates it.
+    (args.output / "toolchain.json").unlink(missing_ok=True)
     # GCC/Clang response files accept quoted arguments with backslash escapes.
     response = "\n".join(
         '"' + flag.replace("\\", "\\\\").replace('"', '\\"') + '"' for flag in flags

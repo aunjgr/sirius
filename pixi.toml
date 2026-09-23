@@ -116,7 +116,6 @@ librmm = "26.08.*"
 gcc_linux-64 = "14.*"
 gxx_linux-64 = "14.*"
 patchelf = "*"
-pyyaml = "*"
 
 [feature.mo.activation.env]
 CUDAARCHS = "75-real;80-real;86-real;89-real;90a-real;100f-real;120a-real;120"

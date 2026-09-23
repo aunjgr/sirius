@@ -1137,7 +1137,6 @@ target_link_libraries(
 set_target_properties(sirius_c_smoke PROPERTIES C_STANDARD 99 LINKER_LANGUAGE
                                                               CXX)
 target_link_libraries(sirius_c_smoke PRIVATE Sirius::embed)
-include(cmake/export_gpu_toolchain.cmake)
 set_property(
   TARGET sirius_c_smoke
   APPEND
@@ -1153,7 +1152,7 @@ add_custom_command(
     "${CMAKE_MAKE_PROGRAM}" --build "${CMAKE_BINARY_DIR}" --consumer
     "$<TARGET_FILE:sirius_c_smoke>" --header
     "${CMAKE_CURRENT_SOURCE_DIR}/src/include/sirius_c.h" --output
-    "${CMAKE_CURRENT_BINARY_DIR}/embedding-sdk" ${_sirius_gpu_export_args}
+    "${CMAKE_CURRENT_BINARY_DIR}/embedding-sdk"
   VERBATIM)
 
 # Only the TAE metadata regression includes scanner bind-data headers directly.
