@@ -567,8 +567,12 @@ TEST_CASE("sirius_config forces the sirius backend for multi-GPU",
 {
   auto const cfg = load_scan_manager("sirius_backend_multi_gpu.yaml",
                                      "sirius:\n"
-                                     "  topology:\n"
-                                     "    num_gpus: 2\n"
+                                     "  space:\n"
+                                     "    gpu:\n"
+                                     "      - device_id: 0\n"
+                                     "        memory_capacity: 1073741824\n"
+                                     "      - device_id: 1\n"
+                                     "        memory_capacity: 1073741824\n"
                                      "  executor:\n"
                                      "    scan_manager:\n"
                                      "      backend: kvikio\n");

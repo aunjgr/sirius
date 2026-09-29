@@ -970,8 +970,7 @@ sirius_physical_plan_generator::create_plan(duckdb::LogicalGet& op)
   // plan, the scan must output all these columns so the filter can reference them.
   duckdb::vector<duckdb::LogicalType> batch_ordered_types;
   for (auto& sp : sorted_proj_ids) {
-    auto col_id = column_ids[sp].GetPrimaryIndex();
-    batch_ordered_types.push_back(op.returned_types[col_id]);
+    batch_ordered_types.push_back(op.GetColumnType(column_ids[sp]));
   }
 
   // Handle cases where table function doesn't support pushdown for specific column types
@@ -1117,8 +1116,7 @@ sirius_physical_plan_generator::create_plan(duckdb::LogicalGet& op)
     // output columns expected by upstream operators.
     duckdb::vector<duckdb::unique_ptr<duckdb::Expression>> proj_expressions;
     for (auto& orig_id : original_projection_ids) {
-      auto col_id = column_ids[orig_id].GetPrimaryIndex();
-      auto type   = op.returned_types[col_id];
+      auto type = op.GetColumnType(column_ids[orig_id]);
       proj_expressions.push_back(
         duckdb::make_uniq<duckdb::BoundReferenceExpression>(type, local_batch_column_map[orig_id]));
     }

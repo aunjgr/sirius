@@ -406,6 +406,8 @@ TEST_CASE_METHOD(RuntimeFallbackFixture,
   REQUIRE(err->HasError());
   // Session stays usable.
   REQUIRE(scalar(*con, "SELECT count(*) FROM rf_plan;") == "100");
+  // DuckDB may request its EMPTY virtual scan column for a count-only plan.
+  REQUIRE(scalar(*con, "SELECT count(*) FROM rf_plan WHERE id >= 0;") == "100");
 
   // On: the same query silently falls back at plan time (plan-time fallback + 1).
   con->Query("SET enable_duckdb_fallback = true;");
