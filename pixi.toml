@@ -23,6 +23,7 @@ bc = "*"
 cmake = "4.*"
 cuda-nvcc = "*"
 cuda-nvml-dev = "*"
+cuda-sanitizer-api = "*"
 cxx-compiler = "*"
 make = "*"
 ninja = "*"
@@ -88,6 +89,7 @@ platforms = ["linux-64-cuda13", "linux-aarch64-cuda13"]
 cuda-version = "13.4.*"
 libcudf = "==26.08.01"
 libcuvs = "==26.08.01"
+libnvjitlink-dev = "*"
 
 [feature.cuda13.activation.env]
 # GPU architectures: Turing through Blackwell (75, 80, 86, 89, 90a, 100f, 120a, 120)
@@ -117,6 +119,7 @@ cuda-version = "13.3.*"
 libcudf = "==26.08.01"
 libcuvs = "==26.08.01"
 librmm = "26.08.*"
+libnvjitlink-dev = "*"
 gcc_linux-64 = "14.*"
 gxx_linux-64 = "14.*"
 patchelf = "*"

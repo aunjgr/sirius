@@ -722,6 +722,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/libnvcomp-dev-5.3.0.16-h7bcfba5_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/libnvfatbin-13.4.92-hd2095e1_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/libnvjitlink-13.4.92-hd2095e1_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/linux-64/libnvjitlink-dev-13.4.92-hd2095e1_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/libnvptxcompiler-dev-13.4.92-ha770c72_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/libopenblas-0.3.34-pthreads_hcf972fe_1.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/libopentelemetry-cpp-1.27.0-h3133023_1.conda
@@ -986,6 +987,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/linux-aarch64/libnvcomp-dev-5.3.0.16-he387df4_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-aarch64/libnvfatbin-13.4.92-hae6cbe8_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-aarch64/libnvjitlink-13.4.92-hae6cbe8_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/linux-aarch64/libnvjitlink-dev-13.4.92-hae6cbe8_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-aarch64/libnvptxcompiler-dev-13.4.92-h579c4fd_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-aarch64/libopenblas-0.3.34-pthreads_hdd72021_1.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-aarch64/libopentelemetry-cpp-1.27.0-hbe47268_1.conda
@@ -1397,6 +1399,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/libnvcomp-dev-5.3.0.16-h7bcfba5_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/libnvfatbin-13.3.29-hecca717_1.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/libnvjitlink-13.4.92-hd2095e1_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/linux-64/libnvjitlink-dev-13.4.92-hd2095e1_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/libnvptxcompiler-dev-13.3.73-ha770c72_1.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/libopenblas-0.3.34-pthreads_hf13c14d_2.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/libopentelemetry-cpp-1.27.0-h3133023_1.conda

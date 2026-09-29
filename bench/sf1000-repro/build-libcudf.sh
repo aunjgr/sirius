@@ -14,7 +14,34 @@ CUDF_SRC="${CUDF_SRC:-$HOME/cudf-src}"
 SHIM="${SHIM:-$HOME/cudf-shim}"
 BRANCH=perf/sirius-sf1000-repro
 
-[ -n "${CONDA_PREFIX:-}" ] || { echo "ERROR: run inside the pixi env (pixi run bash $0)"; exit 1; }
+[ -n "${PIXI_PROJECT_ROOT:-}" ] && [ -n "${PIXI_ENVIRONMENT_NAME:-}" ] &&
+  [ -d "${CONDA_PREFIX:-}" ] &&
+  [ "$(realpath "$CONDA_PREFIX")" = "$(realpath "$PIXI_PROJECT_ROOT/.pixi/envs/$PIXI_ENVIRONMENT_NAME")" ] || {
+  echo "ERROR: run inside the Sirius pixi env (pixi run --frozen bash $0)" >&2
+  exit 1
+}
+
+# jitify2_preprocess needs the development header, not just libnvJitLink's
+# runtime. Both must come from the same Pixi environment as cuDF and NVCC.
+NVJITLINK_HEADER=
+for include_dir in "$CONDA_PREFIX/include" "$CONDA_PREFIX/targets/$(uname -m)-linux/include"; do
+  if [ -f "$include_dir/nvJitLink.h" ]; then
+    NVJITLINK_HEADER=$include_dir/nvJitLink.h
+    break
+  fi
+done
+[ -n "$NVJITLINK_HEADER" ] || {
+  echo "ERROR: Pixi libnvjitlink-dev is missing nvJitLink.h; run pixi install --frozen" >&2
+  exit 1
+}
+[ -f "$CONDA_PREFIX/lib/libnvJitLink.so.13" ] || {
+  echo "ERROR: Pixi libnvjitlink is missing libnvJitLink.so.13; run pixi install --frozen" >&2
+  exit 1
+}
+if [ "${SIRIUS_CUDA_PREFLIGHT_ONLY:-0}" = 1 ]; then
+  echo "Pixi CUDA development inputs are present in $CONDA_PREFIX"
+  exit 0
+fi
 
 if [ ! -d "$CUDF_SRC/.git" ]; then
   echo "==> cloning felipeblazing/cudf @ $BRANCH"
@@ -26,15 +53,11 @@ else
   git -C "$CUDF_SRC" checkout -q FETCH_HEAD
 fi
 
-# The pixi env ships the libnvjitlink RUNTIME but not its dev header, and jitify2_preprocess
-# needs nvJitLink.h. Symlink JUST that header (plus the .so name jitify expects) rather than
-# putting the whole system CUDA include tree ahead of conda's -- that would cause version skew.
+# Keep the jitify2 shim, but link only inputs from the activated Pixi prefix.
 echo "==> nvJitLink shim at $SHIM"
 mkdir -p "$SHIM/include" "$SHIM/lib"
-SYS_CUDA=$(ls -d /usr/local/cuda-13.*/targets/*/include 2>/dev/null | head -1)
-[ -n "$SYS_CUDA" ] || { echo "ERROR: no system CUDA 13.x include dir for nvJitLink.h"; exit 1; }
-ln -sf "$SYS_CUDA/nvJitLink.h" "$SHIM/include/nvJitLink.h"
-ln -sf "$(ls "$CONDA_PREFIX"/lib/libnvJitLink.so.13* | head -1)" "$SHIM/lib/libnvJitLink.so"
+ln -sf "$NVJITLINK_HEADER" "$SHIM/include/nvJitLink.h"
+ln -sf "$CONDA_PREFIX/lib/libnvJitLink.so.13" "$SHIM/lib/libnvJitLink.so"
 
 # CRITICAL: append to $CXXFLAGS / $LDFLAGS, never replace them. Passing a bare
 # -DCMAKE_CXX_FLAGS= clobbers conda's flags, dropping -isystem $CONDA_PREFIX/include; CMake then

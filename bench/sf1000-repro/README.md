@@ -27,6 +27,11 @@ pixi run bash bench/sf1000-repro/build-libcudf.sh
 DATA=/path/to/tpch_parquet_sf1000 pixi run bash bench/sf1000-repro/run.sh
 ```
 
+The build helper takes `nvJitLink.h` and `libnvJitLink.so.13` from Pixi's
+`libnvjitlink-dev`/`libnvjitlink` packages; it does not require a system CUDA
+toolkit. To check those inputs without cloning or compiling cuDF, run
+`SIRIUS_CUDA_PREFLIGHT_ONLY=1 pixi run --frozen bash bench/sf1000-repro/build-libcudf.sh`.
+
 For the TPC-H **official power/throughput run** (RF1/RF2 refresh functions, Power@Size /
 Throughput@Size / QphH@Size) with this same performance stack, use `run-power.sh` — it runs on a
 native `.duckdb` dataset (the MVCC refresh path needs it) with the mixed-tier pin layout in

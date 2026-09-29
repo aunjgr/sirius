@@ -65,10 +65,16 @@
 
 set -euo pipefail
 
-CUDA_BIN=$(ls -1 /usr/local/cuda*/bin/compute-sanitizer 2>/dev/null | head -1)
-if [[ -z "${CUDA_BIN}" ]]; then
-  echo "[p22-sanitizer-gate] ERROR: compute-sanitizer not found under /usr/local/cuda*/bin/"
-  echo "[p22-sanitizer-gate] HINT: install CUDA toolkit, or set CUDA_BIN env override"
+if [[ -z "${PIXI_PROJECT_ROOT:-}" || -z "${PIXI_ENVIRONMENT_NAME:-}" || -z "${CONDA_PREFIX:-}" ||
+      ! -d "${CONDA_PREFIX:-}" ||
+      "$(realpath "${CONDA_PREFIX:-/nonexistent}")" != "$(realpath "${PIXI_PROJECT_ROOT:-/nonexistent}/.pixi/envs/${PIXI_ENVIRONMENT_NAME:-missing}")" ]]; then
+  echo "[p22-sanitizer-gate] ERROR: run inside the Sirius Pixi environment"
+  exit 2
+fi
+CUDA_BIN="${CONDA_PREFIX}/bin/compute-sanitizer"
+if [[ ! -x "${CUDA_BIN}" ]]; then
+  echo "[p22-sanitizer-gate] ERROR: Pixi compute-sanitizer missing at ${CUDA_BIN}"
+  echo "[p22-sanitizer-gate] HINT: run pixi install --frozen"
   exit 2
 fi
 
@@ -79,7 +85,7 @@ TIMEOUT_SEC="${P22_TIMEOUT_SEC:-600}"
 
 if [[ ! -x "${UNIT}" ]]; then
   echo "[p22-sanitizer-gate] ERROR: unittest binary not found or not executable at ${UNIT}"
-  echo "[p22-sanitizer-gate] HINT: build first (mcp__project-commands__run_command build)"
+  echo "[p22-sanitizer-gate] HINT: build the Sirius unit tests in this Pixi environment"
   echo "[p22-sanitizer-gate] HINT: or set P22_UNITTEST_BIN env override"
   exit 2
 fi
