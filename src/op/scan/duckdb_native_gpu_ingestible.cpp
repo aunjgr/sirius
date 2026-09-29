@@ -121,10 +121,9 @@ class duckdb_native_batch_coalescer : public batch_coalescer {
     // turns an empty row-group list into a schema-correct 0-row table. Without this,
     // zero splits mean zero tasks and the pipeline-completion signal never fires.
     if (!_produced_any && _have_template) {
-      auto split           = std::make_unique<duckdb_native_scan_info>();
-      split->datasource    = _datasource->duplicate();
-      split->block_manager = _block_manager;
-      _produced_any        = true;
+      auto split = std::make_unique<duckdb_native_scan_info>(
+        std::vector<duckdb_row_group_metadata>{}, _datasource->duplicate(), _block_manager);
+      _produced_any = true;
       out.push_back(std::move(split));
     }
     return out;
@@ -133,10 +132,8 @@ class duckdb_native_batch_coalescer : public batch_coalescer {
  private:
   std::unique_ptr<scan_info> emit_current()
   {
-    auto split           = std::make_unique<duckdb_native_scan_info>();
-    split->row_groups    = std::move(_acc);
-    split->datasource    = _datasource->duplicate();
-    split->block_manager = _block_manager;
+    auto split = std::make_unique<duckdb_native_scan_info>(
+      std::move(_acc), _datasource->duplicate(), _block_manager);
     _acc.clear();
     _acc_bytes = 0;
     std::fill(_col_bytes.begin(), _col_bytes.end(), 0);
@@ -181,23 +178,10 @@ duckdb_native_gpu_ingestible::duckdb_native_gpu_ingestible(
       "[duckdb_native_gpu_ingestible] projected_cols and projected_types must be parallel");
   }
 
-  // Phase 1 (serial): PartitionStatistics,
-  //                   projected-type gate, and
-  //                   filter-stat row-group pruning.
-  // Unsupported types / invalid partitions refuse -> CPU fallback before any per-segment IO.
-  // PartitionStatistics touches ClientContext/LocalStorage (not thread-safe), so it must stay
-  // serial.
-  _plan = prepare_duckdb_native_walk(*bind.storage,
-                                     *bind.context,
-                                     bind.projected_cols,
-                                     bind.projected_types,
-                                     bind.table_filters.get(),
-                                     &bind.column_ids);
-  if (!_plan.viable) {
-    SIRIUS_LOG_DEBUG("[duckdb_native_gpu_ingestible] non-viable: {}",
-                     _plan.viability_failure_reason);
-    throw std::runtime_error("duckdb-native scan rejected query: " +
-                             _plan.viability_failure_reason);
+  // Eager even when the walk is deferred, so an undecodable type still refuses at plan time.
+  if (auto reason = unsupported_projected_type_reason(bind.projected_cols, bind.projected_types)) {
+    SIRIUS_LOG_DEBUG("[duckdb_native_gpu_ingestible] non-viable: {}", *reason);
+    throw std::runtime_error("duckdb-native scan rejected query: " + *reason);
   }
 
   auto& sm          = bind.storage->GetAttached().GetStorageManager();
@@ -232,12 +216,57 @@ duckdb_native_gpu_ingestible::duckdb_native_gpu_ingestible(
     }
   }
 
+  _chunk_row_groups = metadata_parse_chunk();
+  if (bind.defer_metadata_walk) {
+    // Seed _num_ranges in case the split provider is consulted first; the walk rewrites it.
+    _walk_deferred = true;
+    _num_ranges.store(std::max<std::size_t>(
+                        1,
+                        utils::ceil_div(bind.storage->GetRowGroupCollection()->GetRowGroupCount(),
+                                        _chunk_row_groups)),
+                      std::memory_order_relaxed);
+    SIRIUS_LOG_DEBUG(
+      "[duckdb_native_gpu_ingestible] deferring metadata walk for pin-served scan of '{}'",
+      bind.table_name);
+  } else {
+    run_metadata_walk();
+  }
+}
+
+//! PartitionStatistics touches ClientContext/LocalStorage (not thread-safe), so this must stay
+//! serial; the deferred path runs it from prepare_for_query on the query thread.
+void duckdb_native_gpu_ingestible::run_metadata_walk()
+{
+  auto const& bind = *_info;
+  _plan            = prepare_duckdb_native_walk(*bind.storage,
+                                     *bind.context,
+                                     bind.projected_cols,
+                                     bind.projected_types,
+                                     bind.table_filters.get(),
+                                     &bind.column_ids);
+  if (!_plan.viable) {
+    SIRIUS_LOG_DEBUG("[duckdb_native_gpu_ingestible] non-viable: {}",
+                     _plan.viability_failure_reason);
+    throw std::runtime_error("duckdb-native scan rejected query: " +
+                             _plan.viability_failure_reason);
+  }
   // Slice [0, n_row_groups) into parse ranges; each becomes one thunk (Phase 2).
   // Always at least one range: a zero-row-group table must still push one (empty)
   // scan_info so the coalescer seeds its template and emits the empty split —
   // zero splits would mean zero tasks and the query never completes.
-  _chunk_row_groups = metadata_parse_chunk();
-  _num_ranges = std::max<std::size_t>(1, utils::ceil_div(_plan.n_row_groups, _chunk_row_groups));
+  _num_ranges.store(
+    std::max<std::size_t>(1, utils::ceil_div(_plan.n_row_groups, _chunk_row_groups)),
+    std::memory_order_relaxed);
+}
+
+void duckdb_native_gpu_ingestible::ensure_metadata_prepared()
+{
+  if (!_walk_deferred || _walk_ready.load(std::memory_order_acquire)) { return; }
+  // call_once re-arms after an exception, so a failed walk is retried rather than latched.
+  std::call_once(_walk_once, [this] {
+    run_metadata_walk();
+    _walk_ready.store(true, std::memory_order_release);
+  });
 }
 
 duckdb_native_gpu_ingestible::~duckdb_native_gpu_ingestible() = default;
@@ -247,14 +276,26 @@ duckdb_native_gpu_ingestible::~duckdb_native_gpu_ingestible() = default;
 //===----------------------------------------------------------------------===//
 bool duckdb_native_gpu_ingestible::has_processed_all_metadata() const
 {
-  return _next_range_idx.load(std::memory_order_relaxed) >= _num_ranges;
+  return _next_range_idx.load(std::memory_order_relaxed) >=
+         _num_ranges.load(std::memory_order_relaxed);
 }
 
 duckdb_native_gpu_ingestible::metadata_scan_task_t
 duckdb_native_gpu_ingestible::next_split_provider(io::ioctx_resolver resolve)
 {
+  // Backstop: the scan manager already ran the walk on the query thread, so this is a no-op.
+  if (metadata_walk_pending()) {
+    SIRIUS_LOG_WARN(
+      "[duckdb_native_gpu_ingestible] deferred metadata walk still pending at "
+      "next_split_provider for '{}'; running it now (off the query thread)",
+      _info->table_name);
+    ensure_metadata_prepared();
+  }
+
   auto const idx = _next_range_idx.fetch_add(1, std::memory_order_relaxed);
-  if (idx >= _num_ranges) { return nullptr; }  // lost the race for the final range
+  if (idx >= _num_ranges.load(std::memory_order_relaxed)) {
+    return nullptr;  // lost the race for the final range
+  }
 
   auto const rg_begin = idx * _chunk_row_groups;
   auto const rg_end   = std::min(rg_begin + _chunk_row_groups, _plan.n_row_groups);
@@ -270,10 +311,8 @@ duckdb_native_gpu_ingestible::next_split_provider(io::ioctx_resolver resolve)
                                std::to_string(rg_begin) + ", " + std::to_string(rg_end) +
                                ")): " + range.viability_failure_reason);
     }
-    auto split           = std::make_unique<duckdb_native_scan_info>();
-    split->row_groups    = std::move(range.row_groups);
-    split->datasource    = io_ctx->open_datasource(_info->db_path);
-    split->block_manager = _block_manager;
+    auto split = std::make_unique<duckdb_native_scan_info>(
+      std::move(range.row_groups), io_ctx->open_datasource(_info->db_path), _block_manager);
     return split;
   };
 }
@@ -284,7 +323,7 @@ duckdb_native_gpu_ingestible::next_split_provider(io::ioctx_resolver resolve)
 filtered_table duckdb_native_gpu_ingestible::materialize_metadata_to_table(
   scan_info const& info,
   ::cucascade::memory::memory_space const& mem_space,
-  rmm::cuda_stream_view stream,
+  ::cuda::stream_ref stream,
   bool /*like_swar_fastpath*/,
   std::shared_ptr<const like_multiliteral_cache> /*like_cache*/)
 {
@@ -345,7 +384,7 @@ std::vector<std::size_t> kept_positions(std::size_t width, std::span<std::size_t
 std::unique_ptr<cudf::table> duckdb_native_gpu_ingestible::post_filter_and_project(
   filtered_table&& input,
   ::cucascade::memory::memory_space const& mem_space,
-  rmm::cuda_stream_view stream,
+  ::cuda::stream_ref stream,
   bool like_swar_fastpath,
   std::shared_ptr<const like_multiliteral_cache> like_cache,
   std::unique_ptr<cudf::column>* /*survivors*/,

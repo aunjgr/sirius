@@ -65,6 +65,8 @@ ORDER BY l_returnflag;
 
 -- Disable transparent GPU execution for this connection
 SET gpu_execution = false;
+-- ... or for every connection of this database instance without a session value
+SET GLOBAL gpu_execution = false;
 ```
 
 Execution is out-of-core with tiered memory management (GPU/host/disk), automatic data partitioning, and spilling, and works with both **Parquet** and **DuckDB-native** storage. See [`gpu_execution`](gpu_execution.md) for build, configuration, and testing details.
@@ -74,13 +76,9 @@ Execution is out-of-core with tiered memory management (GPU/host/disk), automati
 Use Sirius through DuckDB's Python API: load the extension, execute SQL, and fetch results.
 Supported queries run on the GPU automatically, just as they do in the DuckDB shell.
 
-After building Sirius above, run these commands from the repository root to build the Python
-package against the same DuckDB source as the extension:
-
-```bash
-git submodule update --init --depth=1 duckdb-python
-pixi run -e duckdb-python build-duckdb-python
-```
+The default Pixi environment includes DuckDB's Python package. Its DuckDB version must match
+the version used to build the Sirius extension. Forked or nightly DuckDB builds may also require
+a Python package built from compatible source.
 
 Save this example as `example.py` in the repository root and replace `/path/to/lineitem.parquet`
 with your TPC-H Parquet file. `allow_unsigned_extensions` allows loading the locally built
@@ -110,7 +108,7 @@ con.close()
 Run it from the repository root:
 
 ```bash
-pixi run -e duckdb-python python example.py
+pixi run python example.py
 ```
 
 For an example using TPC-H data from Parquet files or a DuckDB database, see the

@@ -41,8 +41,7 @@
 #include "sirius_config.hpp"
 #include "sirius_context.hpp"
 #include "sirius_interface.hpp"
-
-#include <nvtx3/nvtx3.hpp>
+#include "telemetry/nvtx.hpp"
 
 #include <cucascade/data/data_repository_manager.hpp>
 #include <cucascade/memory/memory_space.hpp>
@@ -144,8 +143,26 @@ void sirius_engine::reset()
 
 void sirius_engine::cancel_tasks()
 {
+  cancel_dynamic_filter_publications();
   sirius_pipelines.clear();
   sirius_root_pipelines.clear();
+}
+
+void sirius_engine::cancel_dynamic_filter_publications() noexcept
+{
+  if (!query_) { return; }
+  auto cancel = [](op::sirius_physical_operator* candidate) noexcept {
+    if (auto* join = dynamic_cast<op::sirius_physical_hash_join*>(candidate)) {
+      join->cancel_dynamic_filter_publication();
+    }
+  };
+  for (auto const& pipeline : query_->get_pipelines()) {
+    cancel(pipeline->get_source().get());
+    cancel(pipeline->get_sink().get());
+    for (auto const& op_ref : pipeline->operators) {
+      cancel(&op_ref.get());
+    }
+  }
 }
 
 bool sirius_engine::has_result_collector()
@@ -194,7 +211,7 @@ void sirius_engine::report_execution_error(std::exception_ptr error)
 
 void sirius_engine::execute(std::stop_token stop, std::chrono::steady_clock::time_point deadline)
 {
-  nvtx3::scoped_range nvtx_range{"sirius::query"};
+  nvtx_scoped_range nvtx_range{"sirius::query"};
   query_handle_->executing();
 
   auto sirius_ctx = context.registered_state->Get<duckdb::SiriusContext>("sirius_state");
@@ -252,6 +269,7 @@ void sirius_engine::execute(std::stop_token stop, std::chrono::steady_clock::tim
     throw;
   } catch (const std::exception& e) {
     SIRIUS_LOG_ERROR("Error executing query: {}", e.what());
+    cancel_dynamic_filter_publications();
     // Drain all in-flight GPU tasks before returning.  QueryEnd() will call
     // clear_all_repositories() immediately after execute() throws; without
     // this drain, tasks still running in the thread pool hold raw pointers to
@@ -264,6 +282,7 @@ void sirius_engine::execute(std::stop_token stop, std::chrono::steady_clock::tim
     throw;
   } catch (...) {
     SIRIUS_LOG_ERROR("Unknown error executing query");
+    cancel_dynamic_filter_publications();
     sirius_ctx->get_task_scheduler().drain_after_error(query_id_);
     if (auto fatal = completion_handler_->fatal_error()) {
       sirius_ctx->mark_runtime_unavailable();
@@ -342,8 +361,7 @@ void sirius_engine::initialize_internal(op::sirius_physical_operator& plan)
 
   // Build meta-pipeline tree from operator plan
   pipeline::sirius_pipeline_build_state state;
-  auto root_pipeline =
-    duckdb::make_shared_ptr<pipeline::sirius_meta_pipeline>(build_ctx, state, nullptr);
+  auto root_pipeline = std::make_shared<pipeline::sirius_meta_pipeline>(build_ctx, state, nullptr);
   root_pipeline->build(*sirius_physical_plan);
   root_pipeline->ready();
   root_pipeline->get_pipelines(sirius_root_pipelines, false);
