@@ -1547,7 +1547,8 @@ void SiriusRegistration::PinTableFunction(ClientContext& context,
                                       {.capture_chunk_stats               = capture_chunk_stats,
                                        .enable_compressed_materialization = compressed_pin,
                                        .probe_unique_columns              = probe_unique_columns});
-    sirius_ctx->record_compressed_materialization_pin_columns_narrowed(
+    sirius_ctx->get_event_publisher().publish_compressed_materialization(
+      sirius::event::compressed_materialization_activity::pin_columns_narrowed,
       count_narrowed_columns(host_result.column_storage));
     // entry.memory_space is metadata only; each host_chunk carries its own per-GPU
     // NUMA-local memory_space. Pass a representative (the first GPU's host space).
@@ -1579,7 +1580,8 @@ void SiriusRegistration::PinTableFunction(ClientContext& context,
       {.capture_chunk_stats               = false,
        .enable_compressed_materialization = compressed_pin,
        .probe_unique_columns              = probe_unique_columns});
-    sirius_ctx->record_compressed_materialization_pin_columns_narrowed(
+    sirius_ctx->get_event_publisher().publish_compressed_materialization(
+      sirius::event::compressed_materialization_activity::pin_columns_narrowed,
       count_narrowed_columns(dev_result.column_storage));
 
     scan_mgr.insert_pinned_entry_device(data.args.name,
@@ -1600,7 +1602,8 @@ void SiriusRegistration::PinTableFunction(ClientContext& context,
                                                {.capture_chunk_stats = capture_chunk_stats,
                                                 .enable_compressed_materialization = compressed_pin,
                                                 .probe_unique_columns = probe_unique_columns});
-    sirius_ctx->record_compressed_materialization_pin_columns_narrowed(
+    sirius_ctx->get_event_publisher().publish_compressed_materialization(
+      sirius::event::compressed_materialization_activity::pin_columns_narrowed,
       count_narrowed_columns(mat.column_storage));
     auto base_row_count_per_chunk = std::move(mat.base_row_count_per_chunk);
     auto const stored             = scan_mgr.insert_pinned_entry(data.args.name,
@@ -1928,8 +1931,12 @@ static void SiriusCreateAnnIndexFunction(ClientContext& context,
   rmm::cuda_set_device_raii device_guard{rmm::cuda_device_id{target_gpu}};
 
   auto& scan_mgr = sirius_ctx->get_scan_manager();
-  const auto* pin =
+  // OWNING: chunk_views below holds raw column views straight into pin's data for the whole
+  // build, so pin_owner must outlive it — a concurrent unpin on another connection must not
+  // invalidate the entry mid-build.
+  std::shared_ptr<sirius::scan_manager::pinned_entry const> pin_owner =
     scan_mgr.find_pinned_entry_for_duckdb_table(entry_catalog, entry_schema, entry.name);
+  sirius::scan_manager::pinned_entry const* pin = pin_owner.get();
   if (pin == nullptr || pin->tier != cucascade::memory::Tier::GPU) {
     throw InvalidInputException("sirius_create_ann_index: table '" + data.table_name +
                                 "' must be pinned on the GPU tier before building an index");
@@ -1945,7 +1952,8 @@ static void SiriusCreateAnnIndexFunction(ClientContext& context,
   // Collect the vector column's batches as views:
   // a full coalesce of a large dataset overflows cudf's 2^31-element per-column limit
   // in the LIST child. The chunked builder feeds cuVS one chunk at a time via ivf_flat::extend.
-  auto chunk_views = sirius::vss::pinned_column_chunk_views(*pin, data.column_name, *target_space);
+  std::vector<cudf::column_view> chunk_views =
+    sirius::vss::pinned_column_chunk_views(*pin, data.column_name, *target_space);
 
   int64_t n_rows = 0;
   for (auto const& v : chunk_views) {
@@ -2332,11 +2340,13 @@ static unique_ptr<FunctionData> SiriusVectorSearchBind(ClientContext& context,
   if (!sirius_ctx) {
     throw InvalidInputException("sirius_knn_search requires the Sirius context to be initialized");
   }
-  // Required to hold the query-lifecycle slot for the whole build since the pinned entry is
-  // non-owning. The slot also serializes the current-device-resource swap the build does.
+  // The slot serializes the current-device-resource swap the build does. pin_owner keeps the
+  // entry itself alive across the build regardless — a concurrent unpin on another connection
+  // must not invalidate it mid-search.
   duckdb::SiriusContext::SlotGuard slot(*sirius_ctx, context);
-  const auto* pin = sirius_ctx->get_scan_manager().find_pinned_entry_for_duckdb_table(
+  auto pin_owner = sirius_ctx->get_scan_manager().find_pinned_entry_for_duckdb_table(
     req.catalog, req.schema, req.table_name);
+  const auto* pin = pin_owner.get();
   if (pin == nullptr) {
     throw BinderException("sirius_knn_search: table '" + req.table_name +
                           "' must be pinned before it can be searched");

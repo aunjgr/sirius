@@ -80,6 +80,14 @@ load_balancing_scan_batch_coalescer::get_split_provider_bridge(
   };
 }
 
+void load_balancing_scan_batch_coalescer::stop_provider_queues() noexcept
+{
+  for (auto& [_, state] : _slots) {
+    state->stop_queue();
+    state->connector->close();
+  }
+}
+
 void load_balancing_scan_batch_coalescer::slot_loop(std::size_t pipeline_id,
                                                     std::stop_token const& stop)
 {

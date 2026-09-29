@@ -171,10 +171,9 @@ class load_balancing_scan_batch_coalescer {
   load_balancing_scan_batch_coalescer& operator=(load_balancing_scan_batch_coalescer const&) =
     delete;
 
-  /// Register a slot for @p pipeline_id.  Slots are processed by the
-  /// sequencer task in the order they were added — typically scan_manager
-  /// adds them in pipeline-id order so the head-of-line pipeline drains
-  /// first.  The returned pointer is valid for the manager's lifetime.
+  /// Register a slot for @p pipeline_id. Each slot gets its own coalescer task;
+  /// registration order controls submission order, not serial draining. The
+  /// returned pointer is valid for the manager's lifetime.
   metadata_processing_state* register_pipeline(
     op::scan::sirius_gpu_scan_operator* scan_op,
     std::shared_ptr<balancing_strategy> balancer,
@@ -185,6 +184,11 @@ class load_balancing_scan_batch_coalescer {
 
   std::function<void(exec::try_t<std::unique_ptr<op::scan::scan_info>>&&)>
   get_split_provider_bridge(op::scan::sirius_gpu_scan_operator* scan_op);
+
+  /// Stop every bounded provider mailbox and close its connector. Call before
+  /// joining producer threads: a slot still pending on the dispatcher has no
+  /// consumer to free mailbox capacity or wake a blocked scan operator.
+  void stop_provider_queues() noexcept;
 
   /// Drain @p provider into @p connector: pull batches until the provider is
   /// exhausted (or @p stop fires), wrapping each as a resident
@@ -213,10 +217,9 @@ class load_balancing_scan_batch_coalescer {
   /// emit pipeline N+1's splits until pipeline N has closed, and the readahead's
   /// cross-pipeline lookahead then never has anything to find.
   ///
-  /// @warning @p dispatcher must NOT be the one running the metadata tasks that
-  /// feed these slots.  These tasks block waiting for that work, so sharing a
-  /// bounded dispatcher lets them occupy every slot and starve the producers
-  /// they are waiting on — a deadlock, not merely slow.
+  /// Metadata producers run on their own threads, not this bounded dispatcher;
+  /// otherwise waiting slot loops could occupy every worker before producers
+  /// get a turn.
   template <class Dispatcher>
   void spawn_workers(Dispatcher& dispatcher)
   {

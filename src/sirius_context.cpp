@@ -226,7 +226,10 @@ SiriusContext::SiriusContext() = default;
 
 SiriusContext::~SiriusContext() noexcept
 {
-  if (!is_initialized_) { return; }
+  if (!is_initialized_) {
+    event_publisher_->stop();
+    return;
+  }
 
   try {
     terminate();
@@ -241,6 +244,7 @@ SiriusContext::~SiriusContext() noexcept
     } catch (...) {
     }
   }
+  event_publisher_->stop();
 }
 
 // Log host and GPU memory pool stats at a labeled point.
@@ -478,10 +482,10 @@ void SiriusContext::run_mandatory_cleanup(sirius::query_id_t query_id, std::stri
     }
   }
 
-  // Drop scan-manager providers for this query. Repositories are already
-  // cleared above, so downstream data_batches that referenced sliced
-  // host_data_representation are gone before the providers go away.
-  if (scan_manager_) { scan_manager_->reset(); }
+  // Drop THIS query's scan-manager providers; any other in-flight query keeps scanning.
+  // Repositories are already cleared above, so downstream data_batches that referenced
+  // sliced host_data_representation are gone before the providers go away.
+  if (scan_manager_) { scan_manager_->reset(query_id); }
 
   // NOTE: task_creator_->reset(query_id) already ran at the top of this function. That reset is
   // what drops duckdb_scan_task_global_state, which transitively owns a
@@ -538,6 +542,14 @@ void SiriusContext::drop_query_runtime_state_best_effort(sirius::query_id_t quer
   }
   try {
     if (task_scheduler_) { task_scheduler_->drain_query_tasks(query_id); }
+  } catch (...) {
+  }
+  // The scan manager needs the same backstop. prepare_for_query no longer performs a global
+  // reset (it would tear down concurrently-running queries), so nothing else will ever drop
+  // this query's scan state: without this, a failed query leaks its dispatcher, coalescer and
+  // split providers until terminate().
+  try {
+    if (scan_manager_) { scan_manager_->reset(query_id); }
   } catch (...) {
   }
 }
@@ -1232,63 +1244,6 @@ void SiriusContext::record_transparent_execution() noexcept
 void SiriusContext::record_transparent_runtime_fallback() noexcept
 {
   transparent_runtime_fallback_count_.fetch_add(1, std::memory_order_relaxed);
-}
-
-SiriusContext::compressed_materialization_stats
-SiriusContext::get_compressed_materialization_stats() const noexcept
-{
-  return compressed_materialization_stats{
-    .scan_columns_narrowed =
-      compressed_materialization_scan_columns_narrowed_count_.load(std::memory_order_relaxed),
-    .scan_columns_restored =
-      compressed_materialization_scan_columns_restored_count_.load(std::memory_order_relaxed),
-    .pin_columns_narrowed =
-      compressed_materialization_pin_columns_narrowed_count_.load(std::memory_order_relaxed),
-    .scan_sidecars_installed =
-      compressed_materialization_scan_sidecars_installed_count_.load(std::memory_order_relaxed),
-    .partition_narrow_columns =
-      compressed_materialization_partition_narrow_columns_count_.load(std::memory_order_relaxed),
-    .scan_narrow_targets_retracted =
-      compressed_materialization_scan_narrow_targets_retracted_count_.load(
-        std::memory_order_relaxed),
-  };
-}
-
-void SiriusContext::record_compressed_materialization_scan_columns_narrowed(uint64_t count) noexcept
-{
-  compressed_materialization_scan_columns_narrowed_count_.fetch_add(count,
-                                                                    std::memory_order_relaxed);
-}
-
-void SiriusContext::record_compressed_materialization_scan_columns_restored(uint64_t count) noexcept
-{
-  compressed_materialization_scan_columns_restored_count_.fetch_add(count,
-                                                                    std::memory_order_relaxed);
-}
-
-void SiriusContext::record_compressed_materialization_pin_columns_narrowed(uint64_t count) noexcept
-{
-  compressed_materialization_pin_columns_narrowed_count_.fetch_add(count,
-                                                                   std::memory_order_relaxed);
-}
-
-void SiriusContext::record_compressed_materialization_scan_sidecar_installed() noexcept
-{
-  compressed_materialization_scan_sidecars_installed_count_.fetch_add(1, std::memory_order_relaxed);
-}
-
-void SiriusContext::record_compressed_materialization_partition_narrow_columns(
-  uint64_t count) noexcept
-{
-  compressed_materialization_partition_narrow_columns_count_.fetch_add(count,
-                                                                       std::memory_order_relaxed);
-}
-
-void SiriusContext::record_compressed_materialization_scan_narrow_targets_retracted(
-  uint64_t count) noexcept
-{
-  compressed_materialization_scan_narrow_targets_retracted_count_.fetch_add(
-    count, std::memory_order_relaxed);
 }
 
 namespace {
