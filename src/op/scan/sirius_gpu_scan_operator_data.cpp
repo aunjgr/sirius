@@ -26,8 +26,10 @@
 #include <op/dynamic_filter/sirius_dynamic_filter.hpp>
 #include <op/scan/decoded_batch_representation.hpp>
 #include <op/scan/sirius_gpu_scan_operator_data.hpp>
+#include <scan_manager/readahead_scan_manager.hpp>
 
 #include <algorithm>
+#include <cstdint>
 #include <memory>
 #include <numeric>
 #include <stdexcept>
@@ -61,66 +63,152 @@ sirius::decompression_pushdown_scan::compaction_forecast pushdown_compaction_for
 
 }  // namespace
 
-membership_snapshot snapshot_membership_probes(sirius::op::sirius_dynamic_filter_set const& set,
+membership_snapshot snapshot_membership_probes(sirius::op::dynamic_filter_snapshot const& snapshot,
                                                std::size_t n_slots)
 {
   membership_snapshot snap;
-  // generation FIRST: it must never claim probes the walk below did not
-  // capture (see the header doc).
-  snap.generation = set.filter_count();
+  snap.generation = snapshot.generation();
   snap.probes.resize(n_slots);
-  for (std::size_t i = 0; i < n_slots; ++i) {
-    auto filters = set.filters_for_column(i);
-    for (auto& filter : filters) {
-      // Only mask-capable kinds (in-list / small-in-list / Bloom) can probe
-      // at decode; zone-map filters have no per-row form.
-      auto const* applicable =
-        dynamic_cast<sirius::op::sirius_mask_applicable const*>(filter.get());
-      if (applicable == nullptr) {
-        ++snap.skipped_non_mask;
-        continue;
-      }
-      // Ordering signal (sirius::membership_probe doc): rank by ascending
-      // expected keep-rate, num_keys where the concrete filter exposes it.
-      // Bloom has no size accessor — the rank alone places it last.
-      std::uint8_t kind_rank = 255;
-      std::uint64_t num_keys = 0;
-      if (auto const* small =
-            dynamic_cast<sirius::op::sirius_dynamic_small_in_list_filter const*>(filter.get())) {
-        kind_rank = 0;
-        num_keys  = small->size();
-      } else if (auto const* set =
-                   dynamic_cast<sirius::op::sirius_dynamic_in_list_filter const*>(filter.get())) {
-        kind_rank = 1;
-        num_keys  = set->size();
-      } else if (filter->kind() == sirius::op::sirius_dynamic_filter_kind::BLOOM) {
-        kind_rank = 2;
-      }
-      // The closure co-owns the filter. It is snapshotted before the balancer
-      // assigns this split's chunk to a GPU, so the device isn't known yet
-      // here; pass -1 so compute_mask resolves it from the CURRENT CUDA
-      // device at probe time, which the task scheduler has already set to
-      // the chunk's assigned GPU by then.
-      snap.probes[i].push_back(
-        {[f = std::move(filter), applicable](cudf::column_view const& keys,
-                                             rmm::cuda_stream_view s,
-                                             rmm::device_async_resource_ref mr) {
-           return applicable->compute_mask(keys, /*device_id=*/-1, s, mr);
-         },
-         kind_rank,
-         num_keys});
-      ++snap.attached_probes;
+  for (auto const& [i, filter] : snapshot.entries()) {
+    if (i >= n_slots) { continue; }
+    // Only mask-capable kinds (in-list / small-in-list / Bloom) can probe
+    // at decode; zone-map filters have no per-row form.
+    auto const* applicable = dynamic_cast<sirius::op::sirius_mask_applicable const*>(filter.get());
+    if (applicable == nullptr) {
+      ++snap.skipped_non_mask;
+      continue;
     }
+    // Ordering signal (sirius::membership_probe doc): rank by ascending
+    // expected keep-rate, num_keys where the concrete filter exposes it.
+    // Bloom has no size accessor — the rank alone places it last.
+    std::uint8_t kind_rank = 255;
+    std::uint64_t num_keys = 0;
+    if (auto const* small =
+          dynamic_cast<sirius::op::sirius_dynamic_small_in_list_filter const*>(filter.get())) {
+      kind_rank = 0;
+      num_keys  = small->size();
+    } else if (auto const* set =
+                 dynamic_cast<sirius::op::sirius_dynamic_in_list_filter const*>(filter.get())) {
+      kind_rank = 1;
+      num_keys  = set->size();
+    } else if (filter->kind() == sirius::op::sirius_dynamic_filter_kind::BLOOM) {
+      kind_rank = 2;
+    }
+    // The closure co-owns the filter. It is snapshotted before the balancer
+    // assigns this split's chunk to a GPU, so the device isn't known yet
+    // here; pass -1 so compute_mask resolves it from the CURRENT CUDA
+    // device at probe time, which the task scheduler has already set to
+    // the chunk's assigned GPU by then. The prior mask is the decoder's already-combined
+    // conjuncts.
+    snap.probes[i].push_back({[f = filter, applicable](cudf::column_view const& keys,
+                                                       std::uint32_t const* prior_mask_words,
+                                                       ::cuda::stream_ref s,
+                                                       rmm::device_async_resource_ref mr) {
+                                return applicable->compute_mask(
+                                  keys, prior_mask_words, /*device_id=*/-1, s, mr);
+                              },
+                              kind_rank,
+                              num_keys});
+    ++snap.attached_probes;
   }
   return snap;
 }
 
+scan_operator_input::scan_operator_input(
+  std::shared_ptr<scan_info> metadata,
+  std::shared_ptr<scan_manager::readahead_scan_manager> readahead,
+  std::size_t operator_id,
+  std::optional<int> preferred_device)
+  : materialization_info(std::move(metadata)),
+    _readahead(std::move(readahead)),
+    _operator_id(operator_id)
+{
+  auto const& stored = std::get<std::shared_ptr<scan_info>>(materialization_info);
+  if (!stored) { return; }
+
+  if (preferred_device.has_value() && *preferred_device >= 0) {
+    set_preferred_device_id(*preferred_device);
+  }
+
+  // Hint BEFORE publishing.  Registration below is what makes this split
+  // eligible for prefetching, and the readahead worker can act on it the moment
+  // it returns -- so a split published before its datasources carry prefetch
+  // handles is one the worker collects, finds nothing to issue for, and retires
+  // from the prefetch order for good.
+  for (auto const& hint : stored->fadvise_hints()) {
+    if (hint.datasource && !hint.ranges.empty()) {
+      hint.datasource->fadvise(hint.ranges, preferred_device);
+    }
+  }
+
+  // fadvise only creates chunk entries; preparation attaches the buffers that
+  // demand reads can claim and fill even when there is no readahead worker.
+  // A readahead worker can prepare again later: already-prepared requests return
+  // immediately, and allocation failures remain queued for its eviction retry.
+  // Never wait for synchronous eviction while constructing a scan input.
+  static_cast<void>(stored->prepare_for_prefetching(false));
+
+  // The publication barrier.  register_scan_task takes the readahead's mutex,
+  // which the worker also takes to collect, so the hints above are ordered
+  // before any read of them on the worker's side.  Keep this last.
+  if (_readahead) { _readahead->register_scan_task(stored, _operator_id); }
+}
+
+scan_operator_input::~scan_operator_input()
+{
+  // The split is done: its slot is free and the readahead worker should pull
+  // the next scan off the prefetching order.  Nothing else reports `disposed` —
+  // queued/preparing/reading are all reported on the way in — so without this
+  // the scheduler would never retire an operator and the budget would never
+  // refill.
+  try {
+    update(io::cache::scan_stage::disposed);
+  } catch (...) {  // NOLINT(bugprone-empty-catch)
+    // A destructor must not throw; a lost dispose costs a delayed refill, and
+    // the next split's update recomputes the same state anyway.
+  }
+}
+
+scan_operator_input::scan_operator_input(
+  std::shared_ptr<cucascade::data_batch> cached_batch,
+  std::shared_ptr<scan_manager::readahead_scan_manager> readahead,
+  std::size_t operator_id)
+  : materialization_info(std::move(cached_batch)),
+    _readahead(std::move(readahead)),
+    _operator_id(operator_id)
+{
+}
+
+void scan_operator_input::update(io::cache::scan_stage site) const
+{
+  // The manager tracks progress per split, not per operator: one operator emits
+  // many splits and they advance independently, so it needs to know which one
+  // moved.  Null for a resident cached batch, which has no scan_info.
+  scan_info const* task = has_scan_metadata()
+                            ? std::get<std::shared_ptr<scan_info>>(materialization_info).get()
+                            : nullptr;
+  if (task != nullptr) {
+    // Publish the split and datasource state before notifying readahead. In
+    // particular, a disposed notification is the condition that wakes a memory
+    // retry, so the evictor must already be able to observe the cache handles as
+    // disposable when that worker wakes.
+    std::get<std::shared_ptr<scan_info>>(materialization_info)->set_scan_stage(site);
+    // Datasources only, not the fadvise hints: this runs on every stage
+    // transition of every split, and the hints carry the split's entire
+    // byte-range list with them.
+    for (auto const& ds : get_datasources()) {
+      ds->update(site);
+    }
+  }
+  if (_readahead) { _readahead->update_scan_state(_operator_id, task, site); }
+}
+
 void scan_operator_input::prepare_for_processing(
-  const ::cucascade::memory::memory_space* requested_memory_space, rmm::cuda_stream_view stream)
+  const ::cucascade::memory::memory_space* requested_memory_space, ::cuda::stream_ref stream)
 {
   gpu_memory_space = const_cast<::cucascade::memory::memory_space*>(requested_memory_space);
   if (!std::holds_alternative<std::shared_ptr<cucascade::data_batch>>(materialization_info)) {
-    prefetch(io::cache::prefetching_stage::just_in_time);
+    update(io::cache::scan_stage::preparing);
     return;
   }
   auto batch = std::get<std::shared_ptr<cucascade::data_batch>>(materialization_info);
@@ -171,16 +259,17 @@ void scan_operator_input::prepare_for_processing(
       // the visibility mask too, so the two compose into one selection.
       if (sirius::decompression_pushdown_enabled() && dynamic_filters &&
           dynamic_filters->has_filters()) {
-        auto snapshot_onto = [&](auto* rep) {
+        auto const snapshot = dynamic_filters->snapshot();
+        auto snapshot_onto  = [&](auto* rep) {
           if (mvcc_keep_mask.has_mask() && !rep->visibility_mask().has_mask()) { return; }
           std::size_t const n_slots = rep->selected_indices().has_value()
-                                        ? rep->selected_indices()->size()
-                                        : rep->column_names().size();
-          auto snap                 = snapshot_membership_probes(*dynamic_filters, n_slots);
+                                         ? rep->selected_indices()->size()
+                                         : rep->column_names().size();
+          auto snap                 = snapshot_membership_probes(snapshot, n_slots);
           SIRIUS_DECOMPRESSION_PUSHDOWN_DIAG(
             "[decompression-pushdown] join filter attach (decode time) channel={}: slots={} "
-            "attached={} "
-            "generation={} skipped_non_maskable={}",
+             "attached={} "
+             "generation={} skipped_non_maskable={}",
             static_cast<void const*>(dynamic_filters.get()),
             n_slots,
             snap.attached_probes,
@@ -188,8 +277,8 @@ void scan_operator_input::prepare_for_processing(
             snap.skipped_non_mask);
           if (snap.attached_probes == 0) { return; }
           auto const base = rep->pushdown_scan()
-                              ? rep->pushdown_scan()
-                              : std::make_shared<const ::sirius::decompression_pushdown_scan>(
+                               ? rep->pushdown_scan()
+                               : std::make_shared<const ::sirius::decompression_pushdown_scan>(
                                   ::sirius::pushdown_request{});
           rep->set_pushdown_scan(
             base->with_membership_probes(std::move(snap.probes), snap.generation));
@@ -270,7 +359,7 @@ void scan_operator_input::prepare_for_processing(
             // The batch cannot hold null data and its size/view queries dereference the table, so
             // leave a valid empty placeholder.
             mut.set_data(std::make_unique<::cucascade::gpu_table_representation>(
-              std::make_unique<cudf::table>(), space, rmm::cuda_stream_view{}));
+              std::make_unique<cudf::table>(), space, ::cuda::stream_ref{cudaStream_t{}}));
           }
         }
       }
@@ -284,9 +373,7 @@ void scan_operator_input::prepare_for_processing(
 }
 
 std::unique_ptr<cudf::table> scan_operator_input::transactionally_steal_converted_table(
-  std::size_t output_width,
-  const converted_table_builder& builder,
-  rmm::cuda_stream_view stream) const
+  std::size_t output_width, const converted_table_builder& builder, ::cuda::stream_ref stream) const
 {
   // This gate is deliberately narrower than the generic resident path. Only prepare's own fresh
   // conversion may set pending; raw GPU pins and splits with filtering still ahead of them stay
@@ -320,7 +407,7 @@ std::unique_ptr<cudf::table> scan_operator_input::transactionally_steal_converte
 
   auto& space    = gpu_rep->get_memory_space();
   auto empty_rep = std::make_unique<::cucascade::gpu_table_representation>(
-    std::make_unique<cudf::table>(), space, rmm::cuda_stream_view{});
+    std::make_unique<cudf::table>(), space, ::cuda::stream_ref{cudaStream_t{}});
   auto replacements = builder(source_view);
   if (replacements.size() != output_width) {
     throw std::runtime_error(
@@ -360,8 +447,8 @@ std::unique_ptr<cudf::table> scan_operator_input::transactionally_steal_converte
 
 std::size_t scan_operator_input::get_estimated_size_in_bytes() const
 {
-  if (std::holds_alternative<std::unique_ptr<scan_info>>(materialization_info)) {
-    return std::get<std::unique_ptr<scan_info>>(materialization_info)->estimated_bytes();
+  if (std::holds_alternative<std::shared_ptr<scan_info>>(materialization_info)) {
+    return std::get<std::shared_ptr<scan_info>>(materialization_info)->estimated_bytes();
   }
   if (std::holds_alternative<std::shared_ptr<cucascade::data_batch>>(materialization_info)) {
     // Once prepare_for_processing has taken the wrapper's table the batch only
@@ -387,27 +474,27 @@ std::size_t scan_operator_input::get_estimated_size_in_bytes() const
 
 std::size_t scan_operator_input::mandatory_gpu_reservation_bytes() const noexcept
 {
-  auto const* info = std::get_if<std::unique_ptr<scan_info>>(&materialization_info);
+  auto const* info = std::get_if<std::shared_ptr<scan_info>>(&materialization_info);
   return info && *info ? (*info)->mandatory_gpu_reservation_bytes() : 0;
 }
 
 std::shared_ptr<void> scan_operator_input::execution_lease() const
 {
-  auto info = std::get_if<std::unique_ptr<scan_info>>(&materialization_info);
+  auto info = std::get_if<std::shared_ptr<scan_info>>(&materialization_info);
   return info && *info ? (*info)->execution_lease() : nullptr;
 }
 
 void scan_operator_input::gpu_admitted(std::size_t bytes) const
 {
-  auto const* info = std::get_if<std::unique_ptr<scan_info>>(&materialization_info);
+  auto const* info = std::get_if<std::shared_ptr<scan_info>>(&materialization_info);
   if (info && *info) (*info)->gpu_admitted(bytes);
 }
 
 std::size_t scan_operator_input::get_estimated_working_set_size_in_bytes() const
 {
-  if (std::holds_alternative<std::unique_ptr<scan_info>>(materialization_info)) {
+  if (std::holds_alternative<std::shared_ptr<scan_info>>(materialization_info)) {
     auto const decode_bytes =
-      std::get<std::unique_ptr<scan_info>>(materialization_info)->estimated_working_set_bytes();
+      std::get<std::shared_ptr<scan_info>>(materialization_info)->estimated_working_set_bytes();
     if (mvcc_keep_mask.has_mask()) {
       // A partially visible insert-delta split is mask-filtered right after
       // decode: the decoded input and the compacted output (up to input-sized)

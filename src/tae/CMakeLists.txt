@@ -1,0 +1,1 @@
+target_sources(sirius_objects PRIVATE tae_metadata_parser.cpp)

@@ -657,18 +657,24 @@ sirius_physical_plan_generator::create_plan(duckdb::LogicalGet& op)
   // One pinned-entry probe per scan: the compressed-materialization residency gate and
   // the seq_scan MVCC cache-or-CPU guard below share the result. The parquet identity
   // feeds only the gate, so its file resolution runs only when the feature is on.
+  // Both probes are OWNING: the shared_ptr holds the entry alive across the guards below, so a
+  // concurrent UNPIN on another connection cannot invalidate it mid-check. `pinned` is the
+  // shared raw view over whichever probe matched.
+  std::shared_ptr<sirius::scan_manager::pinned_entry const> pinned_owner;
   sirius::scan_manager::pinned_entry const* pinned = nullptr;
   bool serves_insert_deltas                        = false;
+  bool mvcc_pin_serves_scan                        = false;
   if (sirius_state && op.function.name == "seq_scan") {
     auto* bind = dynamic_cast<duckdb::TableScanBindData*>(op.bind_data.get());
     if (bind != nullptr && bind->table.IsDuckTable()) {
-      auto& table = bind->table.Cast<duckdb::DuckTableEntry>();
-      pinned      = sirius_state->get_scan_manager().find_pinned_entry_for_duckdb_table(
+      auto& table  = bind->table.Cast<duckdb::DuckTableEntry>();
+      pinned_owner = sirius_state->get_scan_manager().find_pinned_entry_for_duckdb_table(
         table.ParentCatalog().GetName(),
         table.ParentSchema().name,
         table.name,
         &column_ids,
         &op.returned_types);
+      pinned = pinned_owner.get();
       // Rows beyond the pinned prefix serve as insert-delta splits, decoded fresh at native
       // width. A narrow sidecar over them would pay per-batch exact-range verification and, on
       // an out-of-range inserted value, fail the query over to the CPU fallback — so the
@@ -683,7 +689,8 @@ sirius_physical_plan_generator::create_plan(duckdb::LogicalGet& op)
     auto const files =
       resolve_parquet_scan_file_paths(op.function.name, op.bind_data.get(), op.parameters);
     if (!files.empty()) {
-      pinned = sirius_state->get_scan_manager().find_pinned_entry_for_parquet_files(files);
+      pinned_owner = sirius_state->get_scan_manager().find_pinned_entry_for_parquet_files(files);
+      pinned       = pinned_owner.get();
     }
   }
 
@@ -802,6 +809,8 @@ sirius_physical_plan_generator::create_plan(duckdb::LogicalGet& op)
             "requested columns",
             table.name);
         }
+        // Every guard passed, so the pinned entry serves this scan.
+        mvcc_pin_serves_scan = true;
 #if 0
         // Disabled — these guards walk every row group of the table at plan
         // time, per query. With this block off, (d) above has no clean-table
@@ -967,8 +976,7 @@ sirius_physical_plan_generator::create_plan(duckdb::LogicalGet& op)
   // plan, the scan must output all these columns so the filter can reference them.
   duckdb::vector<duckdb::LogicalType> batch_ordered_types;
   for (auto& sp : sorted_proj_ids) {
-    auto col_id = column_ids[sp].GetPrimaryIndex();
-    batch_ordered_types.push_back(op.returned_types[col_id]);
+    batch_ordered_types.push_back(op.GetColumnType(column_ids[sp]));
   }
 
   // Handle cases where table function doesn't support pushdown for specific column types
@@ -1029,7 +1037,8 @@ sirius_physical_plan_generator::create_plan(duckdb::LogicalGet& op)
       std::move(op.extra_info),
       std::move(op.parameters),
       std::move(op.virtual_columns));
-    node->named_parameters = std::move(op.named_parameters);
+    node->named_parameters     = std::move(op.named_parameters);
+    node->mvcc_pin_serves_scan = mvcc_pin_serves_scan;
     // first check if an additional projection is necessary
     if (column_ids.size() == op.returned_types.size()) {
       bool projection_necessary = false;
@@ -1102,9 +1111,13 @@ sirius_physical_plan_generator::create_plan(duckdb::LogicalGet& op)
     node->set_physical_types(std::move(physical_types));
     node->sidecar_from_gpu_tier_pin =
       pinned != nullptr && pinned->tier == cucascade::memory::Tier::GPU;
-    if (sirius_state) { sirius_state->record_compressed_materialization_scan_sidecar_installed(); }
+    if (sirius_state) {
+      sirius_state->get_event_publisher().publish_compressed_materialization(
+        sirius::event::compressed_materialization_activity::scan_sidecar_installed);
+    }
   }
-  node->named_parameters = std::move(op.named_parameters);
+  node->named_parameters     = std::move(op.named_parameters);
+  node->mvcc_pin_serves_scan = mvcc_pin_serves_scan;
   if (filter) {
     filter->children.push_back(std::move(node));
 
@@ -1112,8 +1125,7 @@ sirius_physical_plan_generator::create_plan(duckdb::LogicalGet& op)
     // output columns expected by upstream operators.
     duckdb::vector<duckdb::unique_ptr<duckdb::Expression>> proj_expressions;
     for (auto& orig_id : original_projection_ids) {
-      auto col_id = column_ids[orig_id].GetPrimaryIndex();
-      auto type   = op.returned_types[col_id];
+      auto type = op.GetColumnType(column_ids[orig_id]);
       proj_expressions.push_back(
         duckdb::make_uniq<duckdb::BoundReferenceExpression>(type, local_batch_column_map[orig_id]));
     }

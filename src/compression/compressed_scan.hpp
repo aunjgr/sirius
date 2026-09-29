@@ -16,8 +16,9 @@
 
 #pragma once
 
-#include <rmm/cuda_stream_view.hpp>
 #include <rmm/resource_ref.hpp>
+
+#include <cuda/stream>
 
 #include <cstddef>
 #include <cstdint>
@@ -74,8 +75,15 @@ struct decode_range {
 /// published device structure (small in-list / hash set / Bloom) over a decoded
 /// key column and returns a BOOL8 keep-mask. The closure co-owns the filter for
 /// the call's duration and must enqueue only on the handed stream.
-using membership_probe_fn = std::function<std::unique_ptr<cudf::column>(
-  cudf::column_view const&, rmm::cuda_stream_view, rmm::device_async_resource_ref)>;
+///
+/// The second argument is an OPTIONAL prior keep-mask over the key column's rows — packed
+/// 1 bit/row (bit `row % 32` of word `row / 32`, 1 = keep), or null. A hint the probe may
+/// ignore: its result is ANDed with that same mask by the caller.
+using membership_probe_fn =
+  std::function<std::unique_ptr<cudf::column>(cudf::column_view const&,
+                                              std::uint32_t const*,
+                                              ::cuda::stream_ref,
+                                              rmm::device_async_resource_ref)>;
 
 /// One membership test plus the signal used to order it.
 ///
@@ -300,7 +308,7 @@ decompress_result decompress_chunk(simpatico::compressed_table const& chunk,
                                    std::span<const std::size_t> selected,
                                    decompression_pushdown_scan const* scan,
                                    decode_visibility_mask const& keep_mask,
-                                   rmm::cuda_stream_view stream,
+                                   ::cuda::stream_ref stream,
                                    rmm::device_async_resource_ref mr);
 
 }  // namespace sirius
