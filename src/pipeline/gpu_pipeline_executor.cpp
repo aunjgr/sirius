@@ -266,9 +266,8 @@ void gpu_pipeline_executor::manager_loop()
                                              ? pipe->get_source_operator().first
                                              : op::sirius_physical_operator::invalid_operator_id;
           _query_event_publisher->publish_wait_for_memory_for_task(
-            make_query_id(static_cast<std::uint32_t>(static_cast<std::uint64_t>(
-                                                      gpu_task->get_priority()) >>
-                                                    32)),
+            make_query_id(static_cast<std::uint32_t>(
+              static_cast<std::uint64_t>(gpu_task->get_priority()) >> 32)),
             stalled_operator_id,
             _memory_space->get_device_id(),
             bytes_needs);

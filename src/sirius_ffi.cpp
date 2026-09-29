@@ -18,20 +18,20 @@
 // translation unit that sees the heavy internal types, so consumers (e.g. the
 // Rust bindings) never include sirius_context.hpp.
 
-#include "config.hpp"                                      // duckdb::Config::LOG_*
-#include "core_functions_extension.hpp"                    // duckdb::CoreFunctionsExtension
-#include "data/sirius_converter_registry.hpp"              // sirius::converter_registry
-#include "duckdb/common/arrow/result_arrow_wrapper.hpp"    // duckdb::ResultArrowArrayStreamWrapper
-#include "duckdb/common/enums/optimizer_type.hpp"          // duckdb::OptimizerType
-#include "duckdb/execution/column_binding_resolver.hpp"    // duckdb::ColumnBindingResolver
-#include "duckdb/main/client_context.hpp"                  // duckdb::ClientContext
-#include "duckdb/main/config.hpp"                          // duckdb::DBConfig
-#include "duckdb/main/connection.hpp"                      // duckdb::Connection
-#include "duckdb/main/database.hpp"                        // duckdb::DuckDB
-#include "duckdb/main/prepared_statement_data.hpp"         // duckdb::PreparedStatementData
-#include "duckdb/main/query_result.hpp"                    // duckdb::QueryResult
-#include "duckdb/main/relation.hpp"                        // duckdb::Relation
-#include "duckdb/optimizer/optimizer.hpp"                  // duckdb::Optimizer
+#include "config.hpp"                                    // duckdb::Config::LOG_*
+#include "core_functions_extension.hpp"                  // duckdb::CoreFunctionsExtension
+#include "data/sirius_converter_registry.hpp"            // sirius::converter_registry
+#include "duckdb/common/arrow/result_arrow_wrapper.hpp"  // duckdb::ResultArrowArrayStreamWrapper
+#include "duckdb/common/enums/optimizer_type.hpp"        // duckdb::OptimizerType
+#include "duckdb/execution/column_binding_resolver.hpp"  // duckdb::ColumnBindingResolver
+#include "duckdb/main/client_context.hpp"                // duckdb::ClientContext
+#include "duckdb/main/config.hpp"                        // duckdb::DBConfig
+#include "duckdb/main/connection.hpp"                    // duckdb::Connection
+#include "duckdb/main/database.hpp"                      // duckdb::DuckDB
+#include "duckdb/main/prepared_statement_data.hpp"       // duckdb::PreparedStatementData
+#include "duckdb/main/query_result.hpp"                  // duckdb::QueryResult
+#include "duckdb/main/relation.hpp"                      // duckdb::Relation
+#include "duckdb/optimizer/optimizer.hpp"                // duckdb::Optimizer
 #include "duckdb/parser/parsed_data/drop_info.hpp"
 #include "duckdb/parser/statement/relation_statement.hpp"  // duckdb::RelationStatement
 #include "duckdb/planner/planner.hpp"                      // duckdb::Planner
@@ -59,9 +59,9 @@
 
 #include <algorithm>
 #include <atomic>
-#include <functional>
 #include <chrono>
 #include <cstdlib>
+#include <functional>
 #include <map>
 #include <set>
 

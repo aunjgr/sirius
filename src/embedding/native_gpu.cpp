@@ -124,10 +124,9 @@ class native_ingestible final : public op::scan::gpu_ingestible {
   {
     auto const& split = dynamic_cast<native_split const&>(info);
     rmm::cuda_stream_view rmm_stream{stream};
-    return {
-      op::scan::owning_table_view(
-        convert_native_input(*split.unit, input_->schema, space, rmm_stream)),
-      op::scan::filter_state::ROW_FILTERED_AND_PROJECTED};
+    return {op::scan::owning_table_view(
+              convert_native_input(*split.unit, input_->schema, space, rmm_stream)),
+            op::scan::filter_state::ROW_FILTERED_AND_PROJECTED};
   }
   std::unique_ptr<cudf::table> post_filter_and_project(
     op::scan::filtered_table&& table,

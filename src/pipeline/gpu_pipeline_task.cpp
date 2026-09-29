@@ -313,9 +313,10 @@ void run_one_operator(op::sirius_physical_operator& op,
   auto start = std::chrono::high_resolution_clock::now();
 
   try {
-    materialized_input_data     = materialize_deferred_input(op, operator_input_data, stream);
-    auto const& effective_input = materialized_input_data ? *materialized_input_data : operator_input_data;
-    operator_output_data        = op.execute(effective_input, stream);
+    materialized_input_data = materialize_deferred_input(op, operator_input_data, stream);
+    auto const& effective_input =
+      materialized_input_data ? *materialized_input_data : operator_input_data;
+    operator_output_data = op.execute(effective_input, stream);
   } catch (const std::exception& ex) {
     // Both the original input and any restored deferred input are still alive here. Quiesce the
     // stream before rethrowing lets their owners unwind only after their last GPU reader finishes.

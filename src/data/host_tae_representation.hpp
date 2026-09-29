@@ -21,10 +21,10 @@
 #include <tae/tae_format.hpp>
 
 // cucascade
+#include <cuda/stream>
+
 #include <cucascade/data/common.hpp>
 #include <cucascade/memory/memory_space.hpp>
-
-#include <cuda/stream>
 
 // rmm
 #include <rmm/cuda_stream_view.hpp>

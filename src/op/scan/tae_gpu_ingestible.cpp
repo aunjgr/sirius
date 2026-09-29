@@ -718,9 +718,7 @@ gpu_ingestible::metadata_scan_task_t tae_gpu_ingestible::next_split_provider(
 }
 
 std::unique_ptr<tae_scan_info> tae_gpu_ingestible::load_object(
-  std::size_t object_index,
-  std::size_t block_index,
-  std::shared_ptr<io::ioctx> const& io_ctx) const
+  std::size_t object_index, std::size_t block_index, std::shared_ptr<io::ioctx> const& io_ctx) const
 {
   if (_metadata_stop.stop_requested()) return std::make_unique<tae_scan_info>();
   auto const& object   = _info->bind_data->objects.at(object_index);

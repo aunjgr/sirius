@@ -15,9 +15,9 @@ add_executable(
   src/embedding/tae_demand.cpp
   src/embedding/result.cpp)
 target_compile_features(sirius_native_control_unittest PRIVATE cxx_std_20)
-target_include_directories(sirius_native_control_unittest
-                           PRIVATE "${CMAKE_SOURCE_DIR}/third_party/catch"
-                                   "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_include_directories(
+  sirius_native_control_unittest PRIVATE "${CMAKE_SOURCE_DIR}/third_party/catch"
+                                         "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(sirius_native_control_unittest PRIVATE Threads::Threads)
 
 add_executable(sirius_native_result_integration
@@ -73,4 +73,5 @@ target_link_libraries(
 # Keep the scanner bind-data test's private include edge explicit.
 set_source_files_properties(
   test/cpp/integration/test_gpu_execution_tae_scan.cpp
-  PROPERTIES INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/tae-scanner/include")
+  PROPERTIES INCLUDE_DIRECTORIES
+             "${CMAKE_CURRENT_SOURCE_DIR}/tae-scanner/include")
