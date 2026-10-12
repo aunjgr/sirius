@@ -23,6 +23,13 @@ cancellation/reuse and memory checks close the production consumer. The negation
 is exposure of stale logical bytes, initialization of unused padding, or retained
 credit after an allocation/initialization failure.
 
+The pinned pool also backs results and publisher scratch. Result acquisition
+uses the same logical-range initializer so alignment gaps and unwritten result
+bytes preserve the previous zero guarantee. CPU/poisoned result fixtures and
+real result packing close this reverse consumer; allocator padding remains
+charged and unaddressable. The initializer is a nonvirtual internal storage
+helper and changes no C ABI or storage ownership.
+
 ## Contracts and owners
 
 The validated import descriptor owns width, precision, scale and nullability.
