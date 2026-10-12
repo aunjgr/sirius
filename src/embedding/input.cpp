@@ -172,7 +172,9 @@ std::shared_ptr<input_batch> native_input::acquire(std::size_t bytes, clock::tim
   }
   require(bytes > 0 && bytes <= capacity, "native input lease size outside window");
   auto allocated = pool->rounded(bytes);
-  require(allocated >= bytes && allocated <= capacity, "native pool rounding exceeds input window");
+  require(allocated >= bytes, "native pool rounding truncates input lease");
+  if (allocated > capacity)
+    throw failure(SIRIUS_RESOURCE_EXHAUSTED, "native pool rounding exceeds input window");
   // Charge retained descriptors as well as physical pool blocks, before either
   // allocation. Constant/NULL vectors cannot hide metadata outside the window.
   auto charged =

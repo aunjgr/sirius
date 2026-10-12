@@ -67,7 +67,12 @@ struct event_waker : capacity_waker {
   bool next() { return events.try_acquire_for(2s); }
 };
 struct rounded_pool : heap_pool {
-  std::size_t rounded(std::size_t bytes) const override { return (bytes + 127) / 128 * 128; }
+  std::size_t block;
+  explicit rounded_pool(std::size_t size = 128) : block(size) {}
+  std::size_t rounded(std::size_t bytes) const override
+  {
+    return (bytes + block - 1) / block * block;
+  }
 };
 struct observed_storage : heap_storage {
   std::shared_ptr<std::atomic<int>> reads;
@@ -713,4 +718,18 @@ TEST_CASE("native first rows retain soft-target and hard-bound behavior with wid
       CHECK(input->inspect().source_units == 0);
     }
   }
+}
+
+TEST_CASE("native pool rounding beyond the window preserves resource exhaustion",
+          "[native_input][input_coalescing]")
+{
+  input_fixture f({23, 0, 0, 1}, 160, input_target, 4, std::make_shared<rounded_pool>(256));
+  try {
+    (void)f.input->acquire(8, clock::now());
+    FAIL("rounded physical storage cannot exceed the native window");
+  } catch (failure const& e) {
+    CHECK(e.error.code == SIRIUS_RESOURCE_EXHAUSTED);
+  }
+  CHECK(f.input->inspect().retained_bytes == 0);
+  CHECK(f.input->inspect().filling_batches == 0);
 }
